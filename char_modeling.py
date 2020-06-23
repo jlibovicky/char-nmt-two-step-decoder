@@ -1,11 +1,12 @@
 """Classes handling character-level input and outpu."""
 
 from typing import Tuple, Optional
-from operator import xor
 
 import torch
 from torch import nn
-import torch.nn.functional as F
+
+
+T = torch.Tensor
 
 
 class CharCNN(nn.Module):
@@ -35,7 +36,7 @@ class CharCNN(nn.Module):
 
     def forward(
             self, data: torch.LongTensor,
-            mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+            mask: T) -> Tuple[T, T]:
         # TODO what about dropout, layer norm etc.
         x = self.embeddings(data).transpose(2, 1)
         x = self.final_cnn(x).transpose(2, 1)
@@ -67,11 +68,10 @@ class CharCTCDecode(nn.Module):
 
     def forward(
             self,
-            representation: torch.Tensor,
-            encoder_mask: torch.Tensor,
+            representation: T,
+            encoder_mask: T,
             targets: torch.LongTensor = None,
-            target_mask: torch.Tensor = None) -> Tuple[
-                torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+            target_mask: T = None) -> Tuple[T, T, Optional[T]]:
         assert ((targets is None and target_mask is None) or
                 (targets is not None and target_mask is not None))
 

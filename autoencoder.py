@@ -4,7 +4,7 @@
 
 import argparse
 import logging
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 import sys
 
 import editdistance
@@ -14,6 +14,9 @@ import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 
 from char_modeling import CharCNN, CharCTCDecode
+
+
+T = torch.Tensor
 
 
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
@@ -27,28 +30,36 @@ VOCAB_DICT = {c: i for i, c in enumerate(VOCAB)}
 def encode(sentence: str) -> Optional[torch.LongTensor]:
     if any(c not in VOCAB_DICT for c in sentence):
         return None
-    return torch.tensor([VOCAB_DICT[c] + 2 for c in sentence])
+    return torch.tensor(
+        [VOCAB_DICT[c] + 2 for c in sentence], dtype=torch.int64)
 
 
-def decode(logprobs: torch.Tensor, lengths: torch.Tensor) -> List[str]:
+def decode(logprobs: T, lengths: T) -> Iterable[str]:
     for indices, length in zip(logprobs.argmax(2), lengths):
-        word = []
-        for idx in indices[:length]:
+        word: List[str] = []
+        was_blank = True
+        for idx in indices[:int(length)]:
             if idx == 1:
+                was_blank = True
                 continue
-            word.append(VOCAB[idx - 2])
+            char_to_add = VOCAB[int(idx) - 2]
+            if was_blank or char_to_add != word[-1]:
+                word.append(char_to_add)
+            was_blank = False
         yield "".join(word)
 
 
 class AutoEncoder(nn.Module):
-    def __init__(self, vocab_size: int, dim: int, final_window: int, final_stride: int) -> None:
+    def __init__(
+            self, vocab_size: int, dim: int, final_window: int,
+            final_stride: int) -> None:
         super().__init__()
 
         self.encoder = CharCNN(vocab_size, dim, final_window, final_stride)
         self.decoder = CharCTCDecode(
             vocab_size, dim, final_window, 2 * final_stride)
 
-    def forward(self, data: torch.LongTensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, data: torch.LongTensor) -> Tuple[T, T, T]:
         mask = (data != 0).float()
         encoded, enc_mask = self.encoder(data, mask)
         decoded, lenghts, loss = self.decoder(encoded, enc_mask, data, mask)
@@ -67,7 +78,7 @@ def main():
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logging.info("Initializing model.")
+    logging.info("Initializing model on device %s.", device)
     model = AutoEncoder(
         len(VOCAB) + 2, args.dim,
         args.final_window, args.final_stride).to(device)
@@ -106,12 +117,11 @@ def main():
         steps += 1
 
         _, _, loss = model(train_tensor)
-        logging.info("Step %d, loss %.3f", steps, loss.item())
+        logging.info("Step %d, loss %.4g", steps, loss.item())
 
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        #scheduler.step()
         optimizer.zero_grad()
         torch.cuda.empty_cache()
 
@@ -128,8 +138,8 @@ def main():
             for hyp, ref in zip(decoded, val_sentences_str[:5]):
                 logging.info("%s -> %s", ref, hyp)
             logging.info(
-                    "VALIDATION: Step %d, loss %.4g, edit distance: %.4g",
-                    steps, val_loss.item(), edit_dists / len(val_sentences))
+                "VALIDATION: Step %d, loss %.4g, edit distance: %.4g",
+                steps, val_loss.item(), edit_dists / len(val_sentences))
 
 
 if __name__ == "__main__":
