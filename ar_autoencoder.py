@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 
-from char_modeling import CharCNN, CharCTCDecode, encode_str, decode_str
+from char_modeling import Seq2SeqModel, encode_str, decode_str
 
 
 T = torch.Tensor
@@ -22,8 +22,8 @@ T = torch.Tensor
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
 
 
-VOCAB = ["</s>"] + list(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,?! ()[]")
+VOCAB = list(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,?! ()[]") + ["</s>"]
 VOCAB_DICT = {c: i for i, c in enumerate(VOCAB)}
 
 
@@ -57,18 +57,20 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info("Initializing model on device %s.", device)
-    model = AutoEncoder(
+
+    model = Seq2SeqModel(
         len(VOCAB) + 2, args.dim,
-        args.final_window, args.final_stride).to(device)
+        args.final_window, args.final_stride,
+        args.final_window, 2 * args.final_stride).to(device)
 
     optimizer = optim.Adam(model.parameters())
 
     logging.info("Pre-loading validation data.")
     val_sentences = []
     val_sentences_str = []
-    while len(val_sentences) < 512:
+    while len(val_sentences) < args.batch_size:
         sentence = args.data.readline().strip()
-        if len(sentence) > 512:
+        if len(sentence) > args.batch_size:
             continue
         encoded_str = encode_str(sentence, VOCAB_DICT)
         if encoded_str is not None:
@@ -94,7 +96,8 @@ def main():
         train_batch = []
         steps += 1
 
-        _, _, loss = model(train_tensor)
+        mask = (train_tensor != 0).float()
+        _, _, loss = model(train_tensor, mask, train_tensor, mask)
         logging.info("Step %d, loss %.4g", steps, loss.item())
 
         loss.backward()
@@ -106,10 +109,18 @@ def main():
         if steps % 20 == 0:
             with torch.no_grad():
                 model.eval()
-                val_decoded, val_lengths, val_loss = model(val_batch)
+                val_decoded = model.greedy_decode(val_batch)
                 model.train()
 
-            decoded = list(decode_str(val_decoded, val_lengths, VOCAB))
+            decoded = []
+            for output in val_decoded:
+                out_sent = []
+                for char_id in output:
+                    if char_id == 2:
+                        break
+                    out_sent.append(VOCAB[char_id - 2])
+                decoded.append("".join(out_sent))
+
             edit_dists = 0
             for hyp, ref in zip(decoded, val_sentences_str):
                 edit_dists += editdistance.eval(hyp, ref) / len(ref)
@@ -117,7 +128,7 @@ def main():
                 logging.info("%s -> %s", ref, hyp)
             logging.info(
                 "VALIDATION: Step %d, loss %.4g, edit distance: %.4g",
-                steps, val_loss.item(), edit_dists / len(val_sentences))
+                steps, 0, edit_dists / len(val_sentences))
 
 
 if __name__ == "__main__":

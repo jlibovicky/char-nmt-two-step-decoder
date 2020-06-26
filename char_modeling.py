@@ -4,6 +4,7 @@ from typing import Dict, Iterable, List, Tuple, Optional
 
 import torch
 from torch import nn
+from torch.nn.utils.rnn import pad_sequence
 from transformers.modeling_bert import BertConfig, BertEncoder
 
 
@@ -16,7 +17,7 @@ def encode_str(
     if any(c not in vocab_dict for c in sentence):
         return None
     return torch.tensor(
-        [vocab_dict[c] + 2 for c in sentence], dtype=torch.int64)
+        [vocab_dict[c] + 2 for c in list(sentence) + ["</s>"]], dtype=torch.int64)
 
 
 def decode_str(logprobs: T, lengths: T, vocab: List[str]) -> Iterable[str]:
@@ -61,8 +62,22 @@ class CharCNN(nn.Module):
 
     def forward(
             self, data: torch.LongTensor,
-            mask: T) -> Tuple[T, T]:
-        # TODO what about dropout, layer norm etc.
+            mask: T,
+            decoder_pad: bool = False,
+            decoder_inference: bool = False,
+            batch_size: T = None) -> Tuple[T, T]:
+
+        if decoder_pad:
+            assert batch_size is not None
+            to_prepend = torch.ones((
+                batch_size, self.final_window),
+                dtype=torch.int64).to(data.device)
+            if data.size(1) > self.final_window:
+                data = data[:, :-self.final_window]
+            else:
+                mask = torch.cat([to_prepend.float(), mask], dim=1)
+            data = torch.cat([to_prepend, data], dim=1)
+
         x = self.embeddings(data).transpose(2, 1)
         x = self.final_cnn(x).transpose(2, 1)
 
@@ -125,6 +140,7 @@ class Encoder(nn.Module):
 
         self.dim = dim
         self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
+        self.layers = layers
 
         self.char_encoder = CharCNN(
             vocab_size, dim, final_window, final_stride)
@@ -135,7 +151,7 @@ class Encoder(nn.Module):
             hidden_size=dim,
             num_hidden_layers=layers,
             num_attention_heads=attention_heads,
-            intermediate_size=ff_dim,
+            intermediate_size=self.ff_dim,
             hidden_act='relu',
             hidden_dropout_prob=dropout,
             attention_probs_dropout_prob=dropout)
@@ -143,7 +159,13 @@ class Encoder(nn.Module):
 
     def forward(self, data: T, mask: T) -> Tuple[T, T]:
         data, mask = self.char_encoder(data, mask)
-        data = self.transformer(data, attention_mask=mask)[0]
+
+        extended_attention_mask = mask.unsqueeze(1).unsqueeze(2)
+        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
+        data = self.transformer(
+            data, attention_mask=extended_attention_mask,
+            head_mask=[None] * self.layers)[0]
 
         return data, mask
 
@@ -158,6 +180,7 @@ class Decoder(nn.Module):
 
         self.dim = dim
         self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
+        self.layers = layers
 
         if reuse_char_cnn is None:
             self.char_encoder = CharCNN(
@@ -171,7 +194,7 @@ class Decoder(nn.Module):
             hidden_size=dim,
             num_hidden_layers=layers,
             num_attention_heads=attention_heads,
-            intermediate_size=ff_dim,
+            intermediate_size=self.ff_dim,
             hidden_act='relu',
             hidden_dropout_prob=dropout,
             attention_probs_dropout_prob=dropout)
@@ -182,20 +205,30 @@ class Decoder(nn.Module):
 
     def forward(
             self, encoder_states: T, encoder_mask: T,
-            decoder_input: T, mask: T, compute_loss: bool = True) -> Tuple[T, T, Optional[T]]:
+            decoder_input: T, mask: T,
+            inference_mode: bool = False,
+            compute_loss: bool = True) -> Tuple[T, T, Optional[T]]:
 
-        # TODO padding and shifting for the decoder by window size
+        decoder_embeddings, mask = self.char_encoder(
+            decoder_input, mask, decoder_pad=True,
+            decoder_inference=inference_mode,
+            batch_size=decoder_input.size(0))
 
-        decoder_embeddings, mask = self.char_encoder(decoder_input, mask)
+        extended_attention_mask = mask.unsqueeze(1).unsqueeze(2)
+        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
+        extended_encoder_mask = encoder_mask.unsqueeze(1).unsqueeze(2)
+        extended_encoder_mask = (1.0 - extended_encoder_mask) * -10000.0
+
         decoder_states = self.transformer(
             decoder_embeddings,
-            attention_mask=mask,
+            attention_mask=extended_attention_mask,
             encoder_hidden_states=encoder_states,
-            encoder_attention_mask=encoder_mask)[0]
+            encoder_attention_mask=extended_encoder_mask,
+            head_mask=[None] * self.layers)[0]
 
         targets, target_mask = None, None
         if compute_loss:
-            # TODO do something with shifting
             targets, target_mask = decoder_input, mask
 
         logprobs, out_lengths, loss = self.char_output(
@@ -225,41 +258,47 @@ class Seq2SeqModel(nn.Module):
 
     def forward(
             self, src_batch: T, src_mask: T, tgt_batch: T, tgt_mask: T,
-            compute_loss: bool = False):
+            compute_loss: bool = True, inference_mode: bool = False):
         encoded, enc_mask = self.encoder(src_batch, src_mask)
 
         logprobs, out_lengths, loss = self.decoder(
-            encoded, enc_mask, tgt_batch, tgt_mask)
+            encoded, enc_mask, tgt_batch, tgt_mask,
+            compute_loss=compute_loss,
+            inference_mode=inference_mode)
+
+        return logprobs, out_lengths, loss
 
     @torch.no_grad()
     def greedy_decode(self, src_batch, max_len=100):
-        input_mask = src_batch != self.src_pad_token_id
-        encoded, _ = self.encoder(src_batch, attention_mask=input_mask)
-        batch_size = encoded.size(0)
+        input_mask = (src_batch != 0).float()
+        encoder_states, encoded_mask = self.encoder(src_batch, input_mask)
+        batch_size = src_batch.size(0)
 
-        finished = [
-            torch.tensor([False for _ in range(batch_size)]).to(self.device)]
-        decoded = [torch.tensor([
-            self.tgt_bos_token_id for _ in range(batch_size)]).to(self.device)]
+        decoded = torch.zeros(
+            (batch_size, 0), dtype=torch.int64).to(src_batch.device)
 
         for _ in range(max_len):
-            decoder_input = torch.stack(decoded, dim=1)
-            decoder_states, _ = self.decoder(
-                decoder_input,
-                attention_mask=~torch.stack(finished, dim=1),
-                encoder_hidden_states=encoded,
-                encoder_attention_mask=input_mask)
-            logits = torch.matmul(
-                decoder_states,
-                self.transposed_embeddings)
-            next_symbol = logits[:, -1].argmax(dim=1)
-            decoded.append(next_symbol)
+            logprobs, out_lenghts, _ = self.decoder(
+                encoder_states, encoded_mask,
+                decoded, (decoded != 0).float(),
+                compute_loss=False, inference_mode=True)
 
-            finished_now = next_symbol == self.tgt_eos_token_id + finished[-1]
-            finished.append(finished_now)
+            # finished = []
+            decoded_as_list = []
+            for sent_idx in logprobs.argmax(2):
+                decoded_sent = []
+                # TODO some policy about neighboring
+                for char_id in sent_idx:
+                    if char_id == 1:
+                        continue
+                    if char_id == 2:
+                        break
+                    decoded_sent.append(char_id)
+                decoded_as_list.append(torch.tensor(decoded_sent))
+            decoded = pad_sequence(
+                decoded_as_list, batch_first=True).to(src_batch.device)
 
-            if all(finished_now):
-                break
+            #if all(finished_now):
+            #    break
 
-        return (torch.stack(decoded, dim=1),
-                torch.stack(finished, dim=1).logical_not())
+        return decoded
