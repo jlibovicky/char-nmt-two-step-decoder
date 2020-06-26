@@ -1,12 +1,37 @@
 """Classes handling character-level input and outpu."""
 
-from typing import Tuple, Optional
+from typing import Dict, Iterable, List, Tuple, Optional
 
 import torch
 from torch import nn
+from transformers.modeling_bert import BertConfig, BertEncoder
 
 
 T = torch.Tensor
+
+
+def encode_str(
+        sentence: str,
+        vocab_dict: Dict[str, int]) -> Optional[torch.LongTensor]:
+    if any(c not in vocab_dict for c in sentence):
+        return None
+    return torch.tensor(
+        [vocab_dict[c] + 2 for c in sentence], dtype=torch.int64)
+
+
+def decode_str(logprobs: T, lengths: T, vocab: List[str]) -> Iterable[str]:
+    for indices, length in zip(logprobs.argmax(2), lengths):
+        word: List[str] = []
+        was_blank = True
+        for idx in indices[:int(length)]:
+            if idx == 1:
+                was_blank = True
+                continue
+            char_to_add = vocab[int(idx) - 2]
+            if was_blank or char_to_add != word[-1]:
+                word.append(char_to_add)
+            was_blank = False
+        yield "".join(word)
 
 
 class CharCNN(nn.Module):
@@ -89,3 +114,152 @@ class CharCTCDecode(nn.Module):
                 target_lengths=target_mask.int().sum(1))
 
         return logprobs, out_lenghts, loss
+
+
+class Encoder(nn.Module):
+    def __init__(
+            self, vocab_size: int, dim: int, final_window: int,
+            final_stride: int, dropout: float = 0.1,
+            layers: int = 6, ff_dim: int = None, attention_heads: int = 8) -> None:
+        super().__init__()
+
+        self.dim = dim
+        self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
+
+        self.char_encoder = CharCNN(
+            vocab_size, dim, final_window, final_stride)
+
+        config = BertConfig(
+            vocab_size=vocab_size,
+            is_decoder=False,
+            hidden_size=dim,
+            num_hidden_layers=layers,
+            num_attention_heads=attention_heads,
+            intermediate_size=ff_dim,
+            hidden_act='relu',
+            hidden_dropout_prob=dropout,
+            attention_probs_dropout_prob=dropout)
+        self.transformer = BertEncoder(config)
+
+    def forward(self, data: T, mask: T) -> Tuple[T, T]:
+        data, mask = self.char_encoder(data, mask)
+        data = self.transformer(data, attention_mask=mask)[0]
+
+        return data, mask
+
+
+class Decoder(nn.Module):
+    def __init__(
+            self, vocab_size: int, dim: int, final_window: int,
+            final_stride: int, dropout: float = 0.1,
+            layers: int = 6, ff_dim: int = None, attention_heads: int = 8,
+            reuse_char_cnn: CharCNN = None) -> None:
+        super().__init__()
+
+        self.dim = dim
+        self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
+
+        if reuse_char_cnn is None:
+            self.char_encoder = CharCNN(
+                vocab_size, dim, final_window, final_stride)
+        else:
+            self.char_encoder = reuse_char_cnn
+
+        config = BertConfig(
+            vocab_size=vocab_size,
+            is_decoder=True,
+            hidden_size=dim,
+            num_hidden_layers=layers,
+            num_attention_heads=attention_heads,
+            intermediate_size=ff_dim,
+            hidden_act='relu',
+            hidden_dropout_prob=dropout,
+            attention_probs_dropout_prob=dropout)
+        self.transformer = BertEncoder(config)
+
+        self.char_output = CharCTCDecode(
+            vocab_size, dim, final_window, final_stride)
+
+    def forward(
+            self, encoder_states: T, encoder_mask: T,
+            decoder_input: T, mask: T, compute_loss: bool = True) -> Tuple[T, T, Optional[T]]:
+
+        # TODO padding and shifting for the decoder by window size
+
+        decoder_embeddings, mask = self.char_encoder(decoder_input, mask)
+        decoder_states = self.transformer(
+            decoder_embeddings,
+            attention_mask=mask,
+            encoder_hidden_states=encoder_states,
+            encoder_attention_mask=encoder_mask)[0]
+
+        targets, target_mask = None, None
+        if compute_loss:
+            # TODO do something with shifting
+            targets, target_mask = decoder_input, mask
+
+        logprobs, out_lengths, loss = self.char_output(
+            decoder_states, mask, targets, target_mask)
+
+        return logprobs, out_lengths, loss
+
+
+class Seq2SeqModel(nn.Module):
+
+    def __init__(
+            self, vocab_size: int, dim: int,
+            encoder_window: int, encoder_stride: int,
+            decoder_window: int, decoder_stride: int,
+            dropout: float = 0.1,
+            layers: int = 6, ff_dim: int = None, attention_heads: int = 8,
+            reuse_char_cnn: CharCNN = None) -> None:
+        super().__init__()
+
+        self.encoder = Encoder(
+            vocab_size, dim, encoder_window, encoder_stride, dropout,
+            layers, ff_dim, attention_heads)
+        self.decoder = Decoder(
+            vocab_size, dim, decoder_window, decoder_stride, dropout,
+            layers, ff_dim, attention_heads,
+            reuse_char_cnn=self.encoder.char_encoder)
+
+    def forward(
+            self, src_batch: T, src_mask: T, tgt_batch: T, tgt_mask: T,
+            compute_loss: bool = False):
+        encoded, enc_mask = self.encoder(src_batch, src_mask)
+
+        logprobs, out_lengths, loss = self.decoder(
+            encoded, enc_mask, tgt_batch, tgt_mask)
+
+    @torch.no_grad()
+    def greedy_decode(self, src_batch, max_len=100):
+        input_mask = src_batch != self.src_pad_token_id
+        encoded, _ = self.encoder(src_batch, attention_mask=input_mask)
+        batch_size = encoded.size(0)
+
+        finished = [
+            torch.tensor([False for _ in range(batch_size)]).to(self.device)]
+        decoded = [torch.tensor([
+            self.tgt_bos_token_id for _ in range(batch_size)]).to(self.device)]
+
+        for _ in range(max_len):
+            decoder_input = torch.stack(decoded, dim=1)
+            decoder_states, _ = self.decoder(
+                decoder_input,
+                attention_mask=~torch.stack(finished, dim=1),
+                encoder_hidden_states=encoded,
+                encoder_attention_mask=input_mask)
+            logits = torch.matmul(
+                decoder_states,
+                self.transposed_embeddings)
+            next_symbol = logits[:, -1].argmax(dim=1)
+            decoded.append(next_symbol)
+
+            finished_now = next_symbol == self.tgt_eos_token_id + finished[-1]
+            finished.append(finished_now)
+
+            if all(finished_now):
+                break
+
+        return (torch.stack(decoded, dim=1),
+                torch.stack(finished, dim=1).logical_not())

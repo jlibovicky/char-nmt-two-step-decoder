@@ -4,7 +4,7 @@
 
 import argparse
 import logging
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, Dict, List, Optional, Tuple
 import sys
 
 import editdistance
@@ -27,14 +27,16 @@ VOCAB = list(
 VOCAB_DICT = {c: i for i, c in enumerate(VOCAB)}
 
 
-def encode(sentence: str) -> Optional[torch.LongTensor]:
+def encode_str(
+        sentence: str,
+        vocab_dict: Dict[str, int]) -> Optional[torch.LongTensor]:
     if any(c not in VOCAB_DICT for c in sentence):
         return None
     return torch.tensor(
-        [VOCAB_DICT[c] + 2 for c in sentence], dtype=torch.int64)
+        [vocab_dict[c] + 2 for c in sentence], dtype=torch.int64)
 
 
-def decode(logprobs: T, lengths: T) -> Iterable[str]:
+def decode_str(logprobs: T, lengths: T, vocab: List[str]) -> Iterable[str]:
     for indices, length in zip(logprobs.argmax(2), lengths):
         word: List[str] = []
         was_blank = True
@@ -42,7 +44,7 @@ def decode(logprobs: T, lengths: T) -> Iterable[str]:
             if idx == 1:
                 was_blank = True
                 continue
-            char_to_add = VOCAB[int(idx) - 2]
+            char_to_add = vocab[int(idx) - 2]
             if was_blank or char_to_add != word[-1]:
                 word.append(char_to_add)
             was_blank = False
@@ -92,7 +94,7 @@ def main():
         sentence = args.data.readline().strip()
         if len(sentence) > 512:
             continue
-        encoded_str = encode(sentence)
+        encoded_str = encode_str(sentence, VOCAB_DICT)
         if encoded_str is not None:
             val_sentences.append(encoded_str)
             val_sentences_str.append(sentence)
@@ -104,7 +106,7 @@ def main():
     for sentence in args.data:
         if len(sentence) > 512:
             continue
-        encoded_str = encode(sentence.strip())
+        encoded_str = encode_str(sentence.strip(), VOCAB_DICT)
         if encoded_str is not None:
             train_batch.append(encoded_str)
 
@@ -131,7 +133,7 @@ def main():
                 val_decoded, val_lengths, val_loss = model(val_batch)
                 model.train()
 
-            decoded = list(decode(val_decoded, val_lengths))
+            decoded = list(decode_str(val_decoded, val_lengths, VOCAB))
             edit_dists = 0
             for hyp, ref in zip(decoded, val_sentences_str):
                 edit_dists += editdistance.eval(hyp, ref) / len(ref)
