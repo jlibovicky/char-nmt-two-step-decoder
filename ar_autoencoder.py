@@ -14,6 +14,7 @@ import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 
 from char_modeling import Seq2SeqModel, encode_str, decode_str
+from lr_scheduler import NoamLR
 
 
 T = torch.Tensor
@@ -27,30 +28,13 @@ VOCAB = list(
 VOCAB_DICT = {c: i for i, c in enumerate(VOCAB)}
 
 
-class AutoEncoder(nn.Module):
-    def __init__(
-            self, vocab_size: int, dim: int, final_window: int,
-            final_stride: int) -> None:
-        super().__init__()
-
-        self.encoder = CharCNN(vocab_size, dim, final_window, final_stride)
-        self.decoder = CharCTCDecode(
-            vocab_size, dim, final_window, 2 * final_stride)
-
-    def forward(self, data: torch.LongTensor) -> Tuple[T, T, T]:
-        mask = (data != 0).float()
-        encoded, enc_mask = self.encoder(data, mask)
-        decoded, lenghts, loss = self.decoder(encoded, enc_mask, data, mask)
-
-        return decoded, lenghts, loss
-
-
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument(
         "data", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--dim", type=int, default=512)
+    parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--final-window", type=int, default=5)
     parser.add_argument("--final-stride", type=int, default=2)
     args = parser.parse_args()
@@ -61,16 +45,18 @@ def main():
     model = Seq2SeqModel(
         len(VOCAB) + 2, args.dim,
         args.final_window, args.final_stride,
-        args.final_window, 2 * args.final_stride).to(device)
+        args.final_window, 2 * args.final_stride,
+        layers=args.layers).to(device)
 
     optimizer = optim.Adam(model.parameters())
+    scheduler = NoamLR(optimizer, 1000)
 
     logging.info("Pre-loading validation data.")
     val_sentences = []
     val_sentences_str = []
     while len(val_sentences) < args.batch_size:
         sentence = args.data.readline().strip()
-        if len(sentence) > args.batch_size:
+        if len(sentence) > 512:
             continue
         encoded_str = encode_str(sentence, VOCAB_DICT)
         if encoded_str is not None:
@@ -104,6 +90,7 @@ def main():
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad()
+        scheduler.step()
         torch.cuda.empty_cache()
 
         if steps % 20 == 0:

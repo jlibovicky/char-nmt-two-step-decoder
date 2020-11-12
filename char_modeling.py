@@ -7,6 +7,8 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers.modeling_bert import BertConfig, BertEncoder
 
+from axe import axe_loss
+
 
 T = torch.Tensor
 
@@ -43,15 +45,16 @@ class CharCNN(nn.Module):
 
         # TODO convolutions before doing the final one
 
-        if final_stride < 2:
-            raise ValueError(
-                "The final stride needs to reduce the sequence length.")
+        #if final_stride < 2:
+        #    raise ValueError(
+        #        "The final stride needs to reduce the sequence length.")
 
         self.final_window = final_window
         self.final_stride = final_stride
         self.dim = dim
 
         self.embeddings = nn.Embedding(vocab_size, dim)
+        self.position_embeddings = nn.Embedding(1024, dim)
         self.final_cnn = nn.Sequential(
             nn.Conv1d(dim, dim, final_window, final_stride),
             nn.ReLU(),
@@ -70,23 +73,30 @@ class CharCNN(nn.Module):
         if decoder_pad:
             assert batch_size is not None
             to_prepend = torch.ones((
-                batch_size, self.final_window),
+                batch_size, 2 * self.final_window),
                 dtype=torch.int64).to(data.device)
-            if data.size(1) > self.final_window:
-                data = data[:, :-self.final_window]
+            if data.size(1) > 2 * self.final_window and not decoder_inference:
+                data = data[:, :-2 * self.final_window]
             else:
-                mask = torch.cat([to_prepend.float(), mask], dim=1)
+                to_prepend_mask = torch.ones((
+                    batch_size, 2 * self.final_window)).to(data.device)
+                mask = torch.cat([to_prepend_mask, mask], dim=1)
+            #if decoder_inference:
+            #    print(data.dtype)
             data = torch.cat([to_prepend, data], dim=1)
 
-        x = self.embeddings(data).transpose(2, 1)
-        x = self.final_cnn(x).transpose(2, 1)
+        indices = torch.arange(data.size(1)).unsqueeze(0).to(data.device)
+        position_embeddings = self.position_embeddings(indices)
+
+        x = self.embeddings(data) + position_embeddings
+        x = self.final_cnn(x.transpose(2, 1)).transpose(2, 1)
 
         out_mask = self.final_mask_shrink(mask.unsqueeze(1)).squeeze(1)
 
         return x, out_mask
 
 
-class CharCTCDecode(nn.Module):
+class CharDecode(nn.Module):
     def __init__(
             self, vocab_size: int, dim: int, final_window: int,
             final_stride: int, dropout: float = 0.1) -> None:
@@ -120,9 +130,16 @@ class CharCTCDecode(nn.Module):
         logprobs = self.expand_layer(
             representation.transpose(2, 1)).transpose(2, 1)
 
-        out_lenghts = self.final_stride * seq_lengths
+        out_lenghts = self.final_stride * (seq_lengths - 1)
         loss = None
         if targets is not None and target_mask is not None:
+            #loss = axe_loss(
+            #    logits=logits,
+            #    logit_lengths=out_lenghts,
+            #    targets=targets,
+            #    target_lengths=target_mask.int().sum(1),
+            #    blank_index=1,
+            #    delta=2.0)
             loss = self.loss_function(
                 logprobs.transpose(0, 1), targets,
                 input_lengths=out_lenghts,
@@ -200,7 +217,7 @@ class Decoder(nn.Module):
             attention_probs_dropout_prob=dropout)
         self.transformer = BertEncoder(config)
 
-        self.char_output = CharCTCDecode(
+        self.char_output = CharDecode(
             vocab_size, dim, final_window, final_stride)
 
     def forward(
@@ -269,7 +286,7 @@ class Seq2SeqModel(nn.Module):
         return logprobs, out_lengths, loss
 
     @torch.no_grad()
-    def greedy_decode(self, src_batch, max_len=100):
+    def greedy_decode(self, src_batch, max_len=300):
         input_mask = (src_batch != 0).float()
         encoder_states, encoded_mask = self.encoder(src_batch, input_mask)
         batch_size = src_batch.size(0)
@@ -296,7 +313,7 @@ class Seq2SeqModel(nn.Module):
                     decoded_sent.append(char_id)
                 decoded_as_list.append(torch.tensor(decoded_sent))
             decoded = pad_sequence(
-                decoded_as_list, batch_first=True).to(src_batch.device)
+                decoded_as_list, batch_first=True).to(src_batch.device).long()
 
             #if all(finished_now):
             #    break
