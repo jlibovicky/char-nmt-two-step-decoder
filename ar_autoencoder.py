@@ -12,8 +12,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
+from transformers.modeling_bert import BertConfig, BertEncoder
 
-from char_modeling import Seq2SeqModel, encode_str, decode_str
+from char_modeling import encode_str, decode_str
+from lee_encoder import Encoder
+from decoder import Decoder
 from lr_scheduler import NoamLR
 
 
@@ -28,26 +31,73 @@ VOCAB = list(
 VOCAB_DICT = {c: i for i, c in enumerate(VOCAB)}
 
 
+class Seq2SeqModel(nn.Module):
+    def __init__(
+            self, vocab_size: int,
+            char_embedding_dim: int = 128,
+            dim: int = 512,
+            shrink_factor: int = 5,
+            ff_dim: int = None,
+            layers: int = 6,
+            attention_heads: int = 8,
+            dropout: float = 0.1) -> None:
+        super().__init__()
+
+        self.layers = layers
+
+        self.encoder = Encoder(
+            vocab_size, char_embedding_dim, dim, shrink_factor,
+            ff_dim, layers, attention_heads, dropout)
+        self.decoder = Decoder(
+            vocab_size, self.encoder.embeddings, self.encoder.char_encoder,
+            dim, layers, ff_dim, attention_heads, dropout)
+
+
+    def forward(
+            self, src_batch: T, src_mask: T, tgt_batch: T, tgt_mask: T,
+            loss_function: nn.Module) -> T:
+        encoded, enc_mask = self.encoder(src_batch, src_mask)
+        loss = self.decoder(
+            encoded, enc_mask, tgt_batch, tgt_mask, loss_function)
+
+        return loss
+
+    @torch.no_grad()
+    def greedy_decode(self, src_batch, max_len=300):
+        input_mask = (src_batch != 0).float()
+        encoder_states, encoded_mask = self.encoder(src_batch, input_mask)
+        decoded, mask = self.decoder.greedy_decode(encoder_states, encoded_mask)
+
+        return decoded, mask
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument(
         "data", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--char-emb-dim", type=int, default=128)
     parser.add_argument("--dim", type=int, default=512)
     parser.add_argument("--layers", type=int, default=6)
-    parser.add_argument("--final-window", type=int, default=5)
-    parser.add_argument("--final-stride", type=int, default=2)
+    parser.add_argument("--shrink-factor", type=int, default=5)
+    parser.add_argument("--attention-heads", type=int, default=8)
+    parser.add_argument("--dropout", type=float, default=0.1)
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info("Initializing model on device %s.", device)
 
     model = Seq2SeqModel(
-        len(VOCAB) + 2, args.dim,
-        args.final_window, args.final_stride,
-        args.final_window, 2 * args.final_stride,
-        layers=args.layers).to(device)
+        len(VOCAB) + 2,
+        char_embedding_dim=args.char_emb_dim,
+        dim=args.dim,
+        shrink_factor=args.shrink_factor,
+        ff_dim=2 * args.dim,
+        layers=args.layers,
+        attention_heads=args.attention_heads,
+        dropout=args.dropout).to(device)
 
+    loss_function = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters())
     scheduler = NoamLR(optimizer, 1000)
 
@@ -83,7 +133,7 @@ def main():
         steps += 1
 
         mask = (train_tensor != 0).float()
-        _, _, loss = model(train_tensor, mask, train_tensor, mask)
+        loss = model(train_tensor, mask, train_tensor, mask, loss_function)
         logging.info("Step %d, loss %.4g", steps, loss.item())
 
         loss.backward()
@@ -96,14 +146,14 @@ def main():
         if steps % 20 == 0:
             with torch.no_grad():
                 model.eval()
-                val_decoded = model.greedy_decode(val_batch)
+                val_decoded = model.greedy_decode(val_batch)[0]
                 model.train()
 
             decoded = []
             for output in val_decoded:
                 out_sent = []
                 for char_id in output:
-                    if char_id == 2:
+                    if char_id == 2 or char_id == len(VOCAB) - 1:
                         break
                     out_sent.append(VOCAB[char_id - 2])
                 decoded.append("".join(out_sent))
