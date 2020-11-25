@@ -15,9 +15,9 @@ class Decoder(nn.Module):
     def __init__(
             self,
             char_vocabulary_size: int,
-            char_embeddings: nn.Embedding,
-            char_encoder: CharToPseudoWord,
+            char_embedding_dim: int,
             dim: int,
+            shrink_factor: int = 5,
             layers: int = 6,
             ff_dim: int = None,
             attention_heads: int = 8,
@@ -29,7 +29,12 @@ class Decoder(nn.Module):
         self.layers = layers
         self.char_vocabulary_size = char_vocabulary_size
 
-        self.char_encoder = char_encoder
+        self.char_embeddings = nn.Embedding(
+            char_vocabulary_size, char_embedding_dim)
+        self.char_encoder = CharToPseudoWord(
+            char_embedding_dim, intermediate_dim=dim,
+            max_pool_window=shrink_factor,
+            is_decoder=True)
         config = BertConfig(
             vocab_size=dim,
             is_decoder=True,
@@ -43,9 +48,8 @@ class Decoder(nn.Module):
             attention_probs_dropout_prob=dropout)
         self.transformer = BertEncoder(config)
 
-        self.char_embeddings = char_embeddings
         self.char_decoder_rnn = nn.LSTM(
-            char_embeddings.embedding_dim, dim, batch_first=True)
+            char_embedding_dim, dim, batch_first=True)
         self.output_proj = nn.Linear(dim, char_vocabulary_size)
 
 
@@ -56,11 +60,12 @@ class Decoder(nn.Module):
             target_ids: T,
             target_mask: T) -> T:
         batch_size = target_ids.size(0)
+        step_size = self.char_encoder.max_pool_window
         to_prepend = torch.ones(
-            (batch_size, self.char_encoder.max_pool_window),
+            (batch_size, step_size),
             dtype=torch.int64).to(target_ids.device)
-        dec_input = torch.cat([to_prepend, target_ids], dim=1)
-        input_mask = torch.cat([to_prepend, target_mask], dim=1)
+        dec_input = torch.cat([to_prepend, target_ids[:, :-step_size]], dim=1)
+        input_mask = torch.cat([to_prepend, target_mask[:, :-step_size]], dim=1)
 
         decoder_embeddings, shrinked_mask = self.char_encoder(
             self.char_embeddings(dec_input), input_mask)

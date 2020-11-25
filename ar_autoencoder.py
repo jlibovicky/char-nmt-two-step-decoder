@@ -14,7 +14,7 @@ import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 from transformers.modeling_bert import BertConfig, BertEncoder
 
-from char_modeling import encode_str, decode_str
+from char_modeling import encode_str
 from lee_encoder import Encoder
 from decoder import Decoder
 from lr_scheduler import NoamLR
@@ -49,8 +49,8 @@ class Seq2SeqModel(nn.Module):
             vocab_size, char_embedding_dim, dim, shrink_factor,
             ff_dim, layers, attention_heads, dropout)
         self.decoder = Decoder(
-            vocab_size, self.encoder.embeddings, self.encoder.char_encoder,
-            dim, layers, ff_dim, attention_heads, dropout)
+            vocab_size, char_embedding_dim, dim, shrink_factor,
+            layers, ff_dim, attention_heads, dropout)
 
 
     def forward(
@@ -146,6 +146,9 @@ def main():
         if steps % 20 == 0:
             with torch.no_grad():
                 model.eval()
+                val_mask = (val_batch != 0).float()
+                val_loss = model(
+                    val_batch, val_mask, val_batch, val_mask, loss_function)
                 val_decoded = model.greedy_decode(val_batch)[0]
                 model.train()
 
@@ -162,10 +165,10 @@ def main():
             for hyp, ref in zip(decoded, val_sentences_str):
                 edit_dists += editdistance.eval(hyp, ref) / len(ref)
             for hyp, ref in zip(decoded, val_sentences_str[:5]):
-                logging.info("%s -> %s", ref, hyp)
+                logging.info("'%s' -> '%s'", ref, hyp)
             logging.info(
                 "VALIDATION: Step %d, loss %.4g, edit distance: %.4g",
-                steps, 0, edit_dists / len(val_sentences))
+                steps, val_loss, edit_dists / len(val_sentences))
 
 
 if __name__ == "__main__":

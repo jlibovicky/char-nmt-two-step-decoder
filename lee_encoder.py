@@ -38,14 +38,18 @@ class CharToPseudoWord(nn.Module):
             self, input_dim: int, conv_filters: List[int] = DEFAULT_FILTERS,
             intermediate_dim: int = 512,
             highway_layers: int = 2, max_pool_window: int = 5,
-            dropout: float = 0.1) -> None:
+            dropout: float = 0.1,
+            is_decoder: bool = False) -> None:
         super(CharToPseudoWord, self).__init__()
 
+        self.is_decoder = is_decoder
+        self.conv_count = len(conv_filters)
         self.max_pool_window = max_pool_window
+        # DO NOT PAD IN DECODER, is handled in forward
         self.convolutions = nn.ModuleList([
             nn.Conv1d(
                 input_dim, dim, kernel_size=i + 1, stride=1,
-                padding=(i + 1) // 2)
+                padding=(1 - int(is_decoder)) * (i + 1) // 2)
             for i, dim in enumerate(conv_filters)])
 
         self.cnn_output_dim = sum(conv_filters)
@@ -55,22 +59,36 @@ class CharToPseudoWord(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.GroupNorm(1, intermediate_dim),
-            nn.MaxPool1d(max_pool_window, max_pool_window))
+            nn.MaxPool1d(
+                max_pool_window, max_pool_window,
+                padding=max_pool_window // 2))
 
         self.highways = nn.Sequential(
             *(Highway(intermediate_dim)
               for _ in range(highway_layers)))
 
-        self.final_mask_shrink = nn.MaxPool1d(max_pool_window, max_pool_window)
+        self.final_mask_shrink = nn.MaxPool1d(
+            max_pool_window, max_pool_window, padding=max_pool_window // 2)
 
 
     def forward(self, embedded_chars: T, mask: T) -> Tuple[T, T]:
+        batch_size = embedded_chars.size(0)
+        if self.is_decoder:
+            padding = torch.ones(
+                (batch_size, self.conv_count, embedded_chars.size(2))).to(embedded_chars.device)
+            embedded_chars = torch.cat(
+                [padding, embedded_chars], dim=1)
         embedded_chars = embedded_chars.transpose(2, 1)
 
-        convolved_char = torch.cat([
-            conv(embedded_chars)[:, :, 1:] if i % 2 == 1
-            else conv(embedded_chars)
-            for i, conv in enumerate(self.convolutions)], dim=1)
+        if self.is_decoder:
+            convolved_char = torch.cat([
+                conv(embedded_chars[:, :, self.conv_count - i:])
+                for i, conv in enumerate(self.convolutions)], dim=1)
+        else:
+            convolved_char = torch.cat([
+                conv(embedded_chars)[:, :, 1:] if i % 2 == 1
+                else conv(embedded_chars)
+                for i, conv in enumerate(self.convolutions)], dim=1)
 
         shrinked = self.after_cnn(convolved_char)
 
