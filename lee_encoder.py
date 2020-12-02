@@ -37,7 +37,8 @@ class CharToPseudoWord(nn.Module):
     def __init__(
             self, input_dim: int, conv_filters: List[int] = DEFAULT_FILTERS,
             intermediate_dim: int = 512,
-            highway_layers: int = 2, max_pool_window: int = 5,
+            highway_layers: int = 2,
+            max_pool_window: int = 5,
             dropout: float = 0.1,
             is_decoder: bool = False) -> None:
         super(CharToPseudoWord, self).__init__()
@@ -104,6 +105,7 @@ class Encoder(nn.Module):
             char_embedding_dim: int = 128,
             dim: int = 512,
             shrink_factor: int = 5,
+            highway_layers: int = 2,
             ff_dim: int = None,
             layers: int = 6,
             attention_heads: int = 8,
@@ -113,11 +115,11 @@ class Encoder(nn.Module):
         self.dim = dim
         self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
         self.layers = layers
-        self.layers = layers
 
         self.embeddings = nn.Embedding(vocab_size, char_embedding_dim)
         self.char_encoder = CharToPseudoWord(
             char_embedding_dim, intermediate_dim=dim,
+            highway_layers=highway_layers,
             max_pool_window=shrink_factor)
         config = BertConfig(
             vocab_size=vocab_size,

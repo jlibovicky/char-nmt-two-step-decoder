@@ -37,6 +37,7 @@ class Seq2SeqModel(nn.Module):
             char_embedding_dim: int = 128,
             dim: int = 512,
             shrink_factor: int = 5,
+            highway_layers: int = 2,
             ff_dim: int = None,
             layers: int = 6,
             attention_heads: int = 8,
@@ -46,10 +47,10 @@ class Seq2SeqModel(nn.Module):
         self.layers = layers
 
         self.encoder = Encoder(
-            vocab_size, char_embedding_dim, dim, shrink_factor,
+            vocab_size, char_embedding_dim, dim, shrink_factor, highway_layers,
             ff_dim, layers, attention_heads, dropout)
         self.decoder = Decoder(
-            vocab_size, char_embedding_dim, dim, shrink_factor,
+            vocab_size, char_embedding_dim, dim, shrink_factor, highway_layers,
             layers, ff_dim, attention_heads, dropout)
 
 
@@ -82,6 +83,8 @@ def main():
     parser.add_argument("--shrink-factor", type=int, default=5)
     parser.add_argument("--attention-heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--highway-layers", type=int, default=2)
+    parser.add_argument("--convolutions", nargs="+", default=[200, 200, 250, 250, 300, 300, 300, 300])
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -92,6 +95,7 @@ def main():
         char_embedding_dim=args.char_emb_dim,
         dim=args.dim,
         shrink_factor=args.shrink_factor,
+        highway_layers=args.highway_layers,
         ff_dim=2 * args.dim,
         layers=args.layers,
         attention_heads=args.attention_heads,
@@ -99,7 +103,7 @@ def main():
 
     loss_function = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters())
-    scheduler = NoamLR(optimizer, 1000)
+    #scheduler = NoamLR(optimizer, 1000)
 
     logging.info("Pre-loading validation data.")
     val_sentences = []
@@ -140,10 +144,10 @@ def main():
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad()
-        scheduler.step()
+        #scheduler.step()
         torch.cuda.empty_cache()
 
-        if steps % 20 == 0:
+        if steps % 40 == 0:
             with torch.no_grad():
                 model.eval()
                 val_mask = (val_batch != 0).float()
@@ -156,7 +160,7 @@ def main():
             for output in val_decoded:
                 out_sent = []
                 for char_id in output:
-                    if char_id == 2 or char_id == len(VOCAB) - 1:
+                    if char_id == 2 or VOCAB[char_id -2] == "</s>":
                         break
                     out_sent.append(VOCAB[char_id - 2])
                 decoded.append("".join(out_sent))
