@@ -45,15 +45,18 @@ class CharToPseudoWord(nn.Module):
 
         self.is_decoder = is_decoder
         self.conv_count = len(conv_filters)
-        self.max_pool_window = max_pool_window
+        self.max_pool_window = input_dim
         # DO NOT PAD IN DECODER, is handled in forward
-        self.convolutions = nn.ModuleList([
-            nn.Conv1d(
-                input_dim, dim, kernel_size=i + 1, stride=1,
-                padding=(1 - int(is_decoder)) * (i + 1) // 2)
-            for i, dim in enumerate(conv_filters)])
-
-        self.cnn_output_dim = sum(conv_filters)
+        if conv_filters == [0]:
+            self.convolutions = None
+            self.cnn_output_dim = input_dim
+        else:
+            self.convolutions = nn.ModuleList([
+                nn.Conv1d(
+                    input_dim, dim, kernel_size=i + 1, stride=1,
+                    padding=(1 - int(is_decoder)) * (i + 1) // 2)
+                for i, dim in enumerate(conv_filters)])
+            self.cnn_output_dim = sum(conv_filters)
 
         self.after_cnn = nn.Sequential(
             nn.Conv1d(self.cnn_output_dim, intermediate_dim, 1, 1),
@@ -81,18 +84,20 @@ class CharToPseudoWord(nn.Module):
                 [padding, embedded_chars], dim=1)
         embedded_chars = embedded_chars.transpose(2, 1)
 
-        if self.is_decoder:
-            convolved_char = torch.cat([
-                conv(embedded_chars[:, :, self.conv_count - i:])
-                for i, conv in enumerate(self.convolutions)], dim=1)
+        if self.convolutions is not None:
+            if self.is_decoder:
+                convolved_char = torch.cat([
+                    conv(embedded_chars[:, :, self.conv_count - i:])
+                    for i, conv in enumerate(self.convolutions)], dim=1)
+            else:
+                convolved_char = torch.cat([
+                    conv(embedded_chars)[:, :, 1:] if i % 2 == 1
+                    else conv(embedded_chars)
+                    for i, conv in enumerate(self.convolutions)], dim=1)
         else:
-            convolved_char = torch.cat([
-                conv(embedded_chars)[:, :, 1:] if i % 2 == 1
-                else conv(embedded_chars)
-                for i, conv in enumerate(self.convolutions)], dim=1)
+            convolved_char = embedded_chars
 
         shrinked = self.after_cnn(convolved_char)
-
         output = self.highways(shrinked)
         shrinked_mask = self.final_mask_shrink(mask.unsqueeze(1)).squeeze(1)
 
@@ -103,13 +108,15 @@ class Encoder(nn.Module):
     def __init__(
             self, vocab_size: int,
             char_embedding_dim: int = 128,
+            conv_filters: List[int] = DEFAULT_FILTERS,
             dim: int = 512,
             shrink_factor: int = 5,
             highway_layers: int = 2,
             ff_dim: int = None,
             layers: int = 6,
             attention_heads: int = 8,
-            dropout: float = 0.1) -> None:
+            dropout: float = 0.1,
+            max_length: int = 600) -> None:
         super().__init__()
 
         self.dim = dim
@@ -117,10 +124,14 @@ class Encoder(nn.Module):
         self.layers = layers
 
         self.embeddings = nn.Embedding(vocab_size, char_embedding_dim)
+        self.pre_pos_emb = nn.Parameter(
+            torch.randn(1, max_length, char_embedding_dim))
         self.char_encoder = CharToPseudoWord(
             char_embedding_dim, intermediate_dim=dim,
+            conv_filters=conv_filters,
             highway_layers=highway_layers,
             max_pool_window=shrink_factor)
+        self.post_pos_emb = nn.Parameter(torch.randn(1, max_length // shrink_factor ,dim))
         config = BertConfig(
             vocab_size=vocab_size,
             is_decoder=False,
@@ -134,7 +145,11 @@ class Encoder(nn.Module):
         self.transformer = BertEncoder(config)
 
     def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T]:
-        encoded, enc_mask = self.char_encoder(self.embeddings(data), mask)
+        encoded, enc_mask = self.char_encoder(
+            self.embeddings(data) + self.pre_pos_emb[:, :data.size(1)],
+            mask)
+
+        encoded = encoded + self.post_pos_emb[:, :encoded.size(1)]
 
         extended_attention_mask = enc_mask.unsqueeze(1).unsqueeze(2)
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0

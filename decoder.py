@@ -29,6 +29,7 @@ class Decoder(nn.Module):
         self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
         self.layers = layers
         self.char_vocabulary_size = char_vocabulary_size
+        self.shrink_factor = shrink_factor
 
         self.char_embeddings = nn.Embedding(
             char_vocabulary_size, char_embedding_dim)
@@ -66,14 +67,13 @@ class Decoder(nn.Module):
             target_mask: T,
             for_training: bool) -> T:
         batch_size = target_ids.size(0)
-        step_size = self.char_encoder.max_pool_window
         to_prepend = torch.ones(
-            (batch_size, step_size),
+            (batch_size, self.shrink_factor),
             dtype=torch.int64).to(target_ids.device)
 
         if for_training:
-            target_ids = target_ids[:, :-step_size]
-            target_mask = target_mask[:, :-step_size]
+            target_ids = target_ids[:, :-self.shrink_factor]
+            target_mask = target_mask[:, :-self.shrink_factor]
         dec_input = torch.cat([to_prepend, target_ids], dim=1)
         input_mask = torch.cat([to_prepend, target_mask], dim=1)
 
@@ -81,17 +81,16 @@ class Decoder(nn.Module):
             self.char_embeddings(dec_input), input_mask)
 
         extended_attention_mask = shrinked_mask.unsqueeze(1).unsqueeze(2)
-        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+        extended_attention_mask = (1.0 - extended_attention_mask) * -1e9
 
         extended_encoder_mask = encoder_mask.unsqueeze(1).unsqueeze(2)
-        extended_encoder_mask = (1.0 - extended_encoder_mask) * -10000.0
+        extended_encoder_mask = (1.0 - extended_encoder_mask) * -1e9
 
         decoder_states = self.transformer(
             decoder_embeddings,
             attention_mask=extended_attention_mask,
             encoder_hidden_states=encoder_states,
-            encoder_attention_mask=extended_encoder_mask,
-            head_mask=[None] * self.layers)[0]
+            encoder_attention_mask=extended_encoder_mask)[0]
 
         return decoder_states
 
@@ -116,6 +115,7 @@ class Decoder(nn.Module):
         losses = []
         for i, (state_c, state_h) in enumerate(
                 zip(decoder_states_c, decoder_states_h)):
+            # unsqueeze to have time first, to intialize LSTM
             state_c, state_h = state_c.unsqueeze(0), state_h.unsqueeze(0)
             decode_start = i * self.char_encoder.max_pool_window
             decode_end = (i + 1) * self.char_encoder.max_pool_window
@@ -125,17 +125,17 @@ class Decoder(nn.Module):
             if state_target_ids.size(1) == 0:
                 break
 
-            #decoder_input = torch.cat((
-            #    torch.ones(
-            #        (state_c.size(1), 1),
-            #        dtype=torch.int64).to(state_target_ids.device),
-            #    state_target_ids[:, :-1]), dim=1)
+            decoder_input = torch.cat((
+                torch.ones(
+                    (state_c.size(1), 1),
+                    dtype=torch.int64).to(state_target_ids.device),
+                state_target_ids[:, :-1]), dim=1)
 
-            #step_embedded = self.char_embeddings(decoder_input)
-            #step_states, _ = self.char_decoder_rnn(
-            #    step_embedded, (state_h, state_c))
-            #step_logits = self.output_proj(step_states)
-            step_logits = self.output_proj(state_h)
+            step_embedded = self.char_embeddings(decoder_input)
+            step_states, _ = self.char_decoder_rnn(
+                step_embedded, (state_h.contiguous(), state_c.contiguous()))
+            step_logits = self.output_proj(step_states)
+            #step_logits = self.output_proj(state_h)
 
             loss_per_char = loss_function(
                 step_logits.reshape(-1, self.char_vocabulary_size),
@@ -170,17 +170,17 @@ class Decoder(nn.Module):
                 torch.ones(
                     (batch_size, 1),
                     dtype=torch.int64).to(encoder_states.device)]
-            #rnn_state = (
-            #    self.state_to_lstm_c(last_state),
-            #    self.state_to_lstm_h(last_state))
-            #for _ in range(step_size):
-            #    rnn_output, rnn_state = self.char_decoder_rnn(
-            #        self.char_embeddings(new_chars[-1]), rnn_state)
-            #    next_chars = self.output_proj(rnn_output).argmax(2)
-            #    new_chars.append(next_chars)
+            rnn_state = (
+                self.state_to_lstm_h(last_state),
+                self.state_to_lstm_c(last_state))
+            for _ in range(step_size):
+                rnn_output, rnn_state = self.char_decoder_rnn(
+                    self.char_embeddings(new_chars[-1]), rnn_state)
+                next_chars = self.output_proj(rnn_output).argmax(2)
+                new_chars.append(next_chars)
 
-            new_chars.append(
-                self.output_proj(self.state_to_lstm_h(last_state)).argmax(2).transpose(0, 1))
+            #new_chars.append(
+            #    self.output_proj(self.state_to_lstm_h(last_state)).argmax(2).transpose(0, 1))
 
             to_append = torch.stack(new_chars[1:]).transpose(0, 1).squeeze(2)
             decoded = torch.cat((decoded, to_append), dim=1)

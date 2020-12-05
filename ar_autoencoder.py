@@ -34,6 +34,7 @@ VOCAB_DICT = {c: i for i, c in enumerate(VOCAB)}
 class Seq2SeqModel(nn.Module):
     def __init__(
             self, vocab_size: int,
+            conv_filters: List[int],
             char_embedding_dim: int = 128,
             dim: int = 512,
             shrink_factor: int = 5,
@@ -47,7 +48,7 @@ class Seq2SeqModel(nn.Module):
         self.layers = layers
 
         self.encoder = Encoder(
-            vocab_size, char_embedding_dim, dim, shrink_factor, highway_layers,
+            vocab_size, char_embedding_dim, conv_filters, dim, shrink_factor, highway_layers,
             ff_dim, layers, attention_heads, dropout)
         self.decoder = Decoder(
             vocab_size, char_embedding_dim, dim, shrink_factor, highway_layers,
@@ -77,14 +78,14 @@ def main():
     parser.add_argument(
         "data", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--char-emb-dim", type=int, default=128)
+    parser.add_argument("--char-emb-dim", type=int, default=64)
     parser.add_argument("--dim", type=int, default=512)
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--shrink-factor", type=int, default=5)
     parser.add_argument("--attention-heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--highway-layers", type=int, default=2)
-    parser.add_argument("--convolutions", nargs="+", default=[200, 200, 250, 250, 300, 300, 300, 300])
+    parser.add_argument("--convolutions", nargs="+", default=[200, 200, 250, 250, 300, 300, 300, 300], type=int)
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -92,6 +93,7 @@ def main():
 
     model = Seq2SeqModel(
         len(VOCAB) + 2,
+        conv_filters=args.convolutions,
         char_embedding_dim=args.char_emb_dim,
         dim=args.dim,
         shrink_factor=args.shrink_factor,
@@ -160,7 +162,7 @@ def main():
             for output in val_decoded:
                 out_sent = []
                 for char_id in output:
-                    if char_id == 2 or VOCAB[char_id -2] == "</s>":
+                    if VOCAB[char_id - 2] == "</s>":
                         break
                     out_sent.append(VOCAB[char_id - 2])
                 decoded.append("".join(out_sent))
