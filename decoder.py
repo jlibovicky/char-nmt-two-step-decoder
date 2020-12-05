@@ -4,7 +4,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
-from transformers.modeling_bert import BertConfig, BertEncoder
+from transformers.modeling_bert import BertConfig, BertEncoder, BertModel
 
 from lee_encoder import CharToPseudoWord
 
@@ -184,5 +184,110 @@ class Decoder(nn.Module):
 
             to_append = torch.stack(new_chars[1:]).transpose(0, 1).squeeze(2)
             decoded = torch.cat((decoded, to_append), dim=1)
+
+        return decoded, None
+
+
+class VanillaDecoder(nn.Module):
+    def __init__(
+            self,
+            char_vocabulary_size: int,
+            dim: int,
+            layers: int = 6,
+            ff_dim: int = None,
+            attention_heads: int = 8,
+            dropout: float = 0.1) -> None:
+        super(VanillaDecoder, self).__init__()
+
+        self.dim = dim
+        self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
+        self.layers = layers
+        self.char_vocabulary_size = char_vocabulary_size
+
+        config = BertConfig(
+            vocab_size=dim,
+            is_decoder=True,
+            add_cross_attention=True,
+            hidden_size=dim,
+            num_hidden_layers=layers,
+            num_attention_heads=attention_heads,
+            intermediate_size=self.ff_dim,
+            hidden_act='relu',
+            hidden_dropout_prob=dropout,
+            attention_probs_dropout_prob=dropout)
+        self.transformer = BertModel(config)
+
+        self.output_proj = nn.Linear(dim, char_vocabulary_size)
+
+
+    def _hidden_states(
+            self,
+            encoder_states: T,
+            encoder_mask: T,
+            target_ids: T,
+            target_mask: T,
+            for_training: bool) -> T:
+        batch_size = target_ids.size(0)
+        to_prepend = torch.ones(
+            (batch_size, 1),
+            dtype=torch.int64).to(target_ids.device)
+
+        if for_training:
+            target_ids = target_ids[:, :-1]
+            target_mask = target_mask[:, :-1]
+        dec_input = torch.cat([to_prepend, target_ids], dim=1)
+        input_mask = torch.cat([to_prepend, target_mask], dim=1)
+
+        decoder_states = self.transformer(
+            dec_input,
+            attention_mask=input_mask,
+            encoder_hidden_states=encoder_states,
+            encoder_attention_mask=encoder_mask)[0]#,
+            #head_mask=[None] * self.layers)[0]
+
+        return decoder_states
+
+    def forward(
+            self,
+            encoder_states: T,
+            encoder_mask: T,
+            target_ids: T,
+            target_mask: T,
+            loss_function: nn.Module) -> T:
+
+        decoder_states = self._hidden_states(
+            encoder_states, encoder_mask, target_ids, target_mask,
+            for_training=True)
+
+        decoder_logits = self.output_proj(decoder_states)
+
+        loss_per_char = loss_function(
+            decoder_logits.reshape(-1, self.char_vocabulary_size),
+            target_ids.reshape(-1))
+
+        return (loss_per_char * target_mask.reshape(-1)).sum() / target_mask.sum()
+
+    @torch.no_grad()
+    def greedy_decode(
+            self,
+            encoder_states: T,
+            encoder_mask: T,
+            max_len: int = 200) -> Tuple[T, T]:
+        batch_size = encoder_states.size(0)
+
+        decoded = torch.ones(
+            (batch_size, 0),
+            dtype=torch.int64).to(encoder_states.device)
+
+        for _ in range(max_len):
+            last_state = self._hidden_states(
+                encoder_states, encoder_mask,
+                decoded,
+                torch.ones_like(decoded, dtype=torch.float),
+                for_training=False)[:, -1]
+
+            new_char = self.output_proj(last_state).argmax(1, keepdim=True)
+
+            decoded = torch.cat((decoded, new_char), dim=1)
 
         return decoded, None

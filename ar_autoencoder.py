@@ -16,7 +16,7 @@ from transformers.modeling_bert import BertConfig, BertEncoder
 
 from char_modeling import encode_str
 from lee_encoder import Encoder
-from decoder import Decoder
+from decoder import Decoder, VanillaDecoder
 from lr_scheduler import NoamLR
 
 
@@ -42,7 +42,8 @@ class Seq2SeqModel(nn.Module):
             ff_dim: int = None,
             layers: int = 6,
             attention_heads: int = 8,
-            dropout: float = 0.1) -> None:
+            dropout: float = 0.1,
+            vanilla_decoder: bool = False) -> None:
         super().__init__()
 
         self.layers = layers
@@ -50,9 +51,13 @@ class Seq2SeqModel(nn.Module):
         self.encoder = Encoder(
             vocab_size, char_embedding_dim, conv_filters, dim, shrink_factor, highway_layers,
             ff_dim, layers, attention_heads, dropout)
-        self.decoder = Decoder(
-            vocab_size, char_embedding_dim, dim, shrink_factor, highway_layers,
-            layers, ff_dim, attention_heads, dropout)
+        if vanilla_decoder:
+            self.decoder = VanillaDecoder(
+                vocab_size, dim, layers, ff_dim, attention_heads, dropout)
+        else:
+            self.decoder = Decoder(
+                vocab_size, char_embedding_dim, dim, shrink_factor, highway_layers,
+                layers, ff_dim, attention_heads, dropout)
 
 
     def forward(
@@ -86,6 +91,7 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--highway-layers", type=int, default=2)
     parser.add_argument("--convolutions", nargs="+", default=[200, 200, 250, 250, 300, 300, 300, 300], type=int)
+    parser.add_argument("--vanilla-decoder", action="store_true", default="False")
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -101,11 +107,12 @@ def main():
         ff_dim=2 * args.dim,
         layers=args.layers,
         attention_heads=args.attention_heads,
-        dropout=args.dropout).to(device)
+        dropout=args.dropout,
+        vanilla_decoder=args.vanilla_decoder).to(device)
 
     loss_function = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters())
-    #scheduler = NoamLR(optimizer, 1000)
+    scheduler = NoamLR(optimizer, 1000)
 
     logging.info("Pre-loading validation data.")
     val_sentences = []
@@ -146,7 +153,7 @@ def main():
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad()
-        #scheduler.step()
+        scheduler.step()
         torch.cuda.empty_cache()
 
         if steps % 40 == 0:
