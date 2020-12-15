@@ -1,9 +1,7 @@
-from typing import Dict, Iterable, List, Tuple, Optional
+from typing import Tuple
 
 import torch
 from torch import nn
-import torch.nn.functional as F
-from torch.nn.utils.rnn import pad_sequence
 from transformers.modeling_bert import BertConfig, BertEncoder, BertModel
 
 from lee_encoder import CharToPseudoWord
@@ -12,6 +10,7 @@ T = torch.Tensor
 
 
 class Decoder(nn.Module):
+    # pylint: disable=too-many-arguments
     def __init__(
             self,
             char_vocabulary_size: int,
@@ -23,7 +22,7 @@ class Decoder(nn.Module):
             ff_dim: int = None,
             attention_heads: int = 8,
             dropout: float = 0.1) -> None:
-        super(Decoder, self).__init__()
+        super().__init__()
 
         self.dim = dim
         self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
@@ -46,7 +45,7 @@ class Decoder(nn.Module):
             num_hidden_layers=layers,
             num_attention_heads=attention_heads,
             intermediate_size=self.ff_dim,
-            hidden_act='relu',
+            hidden_act="relu",
             hidden_dropout_prob=dropout,
             attention_probs_dropout_prob=dropout)
         self.transformer = BertEncoder(config)
@@ -57,7 +56,7 @@ class Decoder(nn.Module):
         self.char_decoder_rnn = nn.LSTM(
             char_embedding_dim, dim, batch_first=True)
         self.output_proj = nn.Linear(dim, char_vocabulary_size)
-
+    # pylint: enable=too-many-arguments
 
     def _hidden_states(
             self,
@@ -93,7 +92,6 @@ class Decoder(nn.Module):
             encoder_attention_mask=extended_encoder_mask)[0]
 
         return decoder_states
-
 
     def forward(
             self,
@@ -135,7 +133,6 @@ class Decoder(nn.Module):
             step_states, _ = self.char_decoder_rnn(
                 step_embedded, (state_h.contiguous(), state_c.contiguous()))
             step_logits = self.output_proj(step_states)
-            #step_logits = self.output_proj(state_h)
 
             loss_per_char = loss_function(
                 step_logits.reshape(-1, self.char_vocabulary_size),
@@ -179,9 +176,6 @@ class Decoder(nn.Module):
                 next_chars = self.output_proj(rnn_output).argmax(2)
                 new_chars.append(next_chars)
 
-            #new_chars.append(
-            #    self.output_proj(self.state_to_lstm_h(last_state)).argmax(2).transpose(0, 1))
-
             to_append = torch.stack(new_chars[1:]).transpose(0, 1).squeeze(2)
             decoded = torch.cat((decoded, to_append), dim=1)
 
@@ -197,7 +191,7 @@ class VanillaDecoder(nn.Module):
             ff_dim: int = None,
             attention_heads: int = 8,
             dropout: float = 0.1) -> None:
-        super(VanillaDecoder, self).__init__()
+        super().__init__()
 
         self.dim = dim
         self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
@@ -212,7 +206,7 @@ class VanillaDecoder(nn.Module):
             num_hidden_layers=layers,
             num_attention_heads=attention_heads,
             intermediate_size=self.ff_dim,
-            hidden_act='relu',
+            hidden_act="relu",
             hidden_dropout_prob=dropout,
             attention_probs_dropout_prob=dropout)
         self.transformer = BertModel(config)
@@ -265,7 +259,8 @@ class VanillaDecoder(nn.Module):
             decoder_logits.reshape(-1, self.char_vocabulary_size),
             target_ids.reshape(-1))
 
-        return (loss_per_char * target_mask.reshape(-1)).sum() / target_mask.sum()
+        return (
+            loss_per_char * target_mask.reshape(-1)).sum() / target_mask.sum()
 
     @torch.no_grad()
     def greedy_decode(

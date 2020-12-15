@@ -59,7 +59,6 @@ class Seq2SeqModel(nn.Module):
                 vocab_size, char_embedding_dim, dim, shrink_factor, highway_layers,
                 layers, ff_dim, attention_heads, dropout)
 
-
     def forward(
             self, src_batch: T, src_mask: T, tgt_batch: T, tgt_mask: T,
             loss_function: nn.Module) -> T:

@@ -1,4 +1,4 @@
-from typing import Dict, Iterable, List, Tuple, Optional
+from typing import List, Tuple
 
 import torch
 from torch import nn
@@ -16,7 +16,7 @@ class Highway(nn.Module):
     https://gist.github.com/dpressel/3b4780bafcef14377085544f44183353
     """
     def __init__(self, input_size: int) -> None:
-        super(Highway, self).__init__()
+        super().__init__()
         self.proj = nn.Conv1d(input_size, input_size, kernel_size=1, stride=1)
         self.transform = nn.Conv1d(
             input_size, input_size, kernel_size=1, stride=1)
@@ -35,13 +35,16 @@ DEFAULT_FILTERS = [200, 200, 250, 250, 300, 300, 300, 300]
 class CharToPseudoWord(nn.Module):
     """Character-to-pseudoword encoder."""
     def __init__(
-            self, input_dim: int, conv_filters: List[int] = DEFAULT_FILTERS,
+            self, input_dim: int,
+            # pylint: disable=dangerous-default-value
+            conv_filters: List[int] = DEFAULT_FILTERS,
+            # pylint: enable=dangerous-default-value
             intermediate_dim: int = 512,
             highway_layers: int = 2,
             max_pool_window: int = 5,
             dropout: float = 0.1,
             is_decoder: bool = False) -> None:
-        super(CharToPseudoWord, self).__init__()
+        super().__init__()
 
         self.is_decoder = is_decoder
         self.conv_count = len(conv_filters)
@@ -79,7 +82,8 @@ class CharToPseudoWord(nn.Module):
         batch_size = embedded_chars.size(0)
         if self.is_decoder:
             padding = torch.ones(
-                (batch_size, self.conv_count, embedded_chars.size(2))).to(embedded_chars.device)
+                (batch_size, self.conv_count,
+                 embedded_chars.size(2))).to(embedded_chars.device)
             embedded_chars = torch.cat(
                 [padding, embedded_chars], dim=1)
         embedded_chars = embedded_chars.transpose(2, 1)
@@ -105,10 +109,13 @@ class CharToPseudoWord(nn.Module):
 
 
 class Encoder(nn.Module):
+    # pylint: disable=too-many-arguments
     def __init__(
             self, vocab_size: int,
             char_embedding_dim: int = 128,
+            # pylint: disable=dangerous-default-value
             conv_filters: List[int] = DEFAULT_FILTERS,
+            # pylint: enable=dangerous-default-value
             dim: int = 512,
             shrink_factor: int = 5,
             highway_layers: int = 2,
@@ -131,7 +138,8 @@ class Encoder(nn.Module):
             conv_filters=conv_filters,
             highway_layers=highway_layers,
             max_pool_window=shrink_factor)
-        self.post_pos_emb = nn.Parameter(torch.randn(1, max_length // shrink_factor ,dim))
+        self.post_pos_emb = nn.Parameter(
+            torch.randn(1, max_length // shrink_factor ,dim))
         config = BertConfig(
             vocab_size=vocab_size,
             is_decoder=False,
@@ -139,10 +147,11 @@ class Encoder(nn.Module):
             num_hidden_layers=layers,
             num_attention_heads=attention_heads,
             intermediate_size=self.ff_dim,
-            hidden_act='relu',
+            hidden_act="relu",
             hidden_dropout_prob=dropout,
             attention_probs_dropout_prob=dropout)
         self.transformer = BertEncoder(config)
+    # pylint: enable=too-many-arguments
 
     def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T]:
         encoded, enc_mask = self.char_encoder(
