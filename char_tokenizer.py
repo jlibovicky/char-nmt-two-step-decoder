@@ -18,6 +18,17 @@ class CharTokenizer(object):
         self.idx_to_str = tokens
         self.str_to_idx = {s: i for i, s in enumerate(tokens)}
 
+        self.pad_token_id = 0
+        self.bos_token_id = 1
+        self.eos_token_id = 2
+        self.unk_token_id = 3
+
+        assert tokens[:4] == SPECIAL_SYMBOLS
+
+    @property
+    def vocab_size(self) -> int:
+        return len(self.idx_to_str)
+
     def batch_encode_plus(
             self,
             text: Union[str, List[str]],  # the sentence to be encoded
@@ -74,9 +85,37 @@ class CharTokenizer(object):
             mask = idx_list != 0
             if return_tensors == "pt":
                 mask = mask.float()
-            return idx_list, idx_list != 0
+            return idx_list, mask
         return idx_list
 
+    def decode(
+            self,
+            token_ids: Union[int, List[int], np.ndarray, torch.Tensor]) -> str:
+        if isinstance(token_ids, int):
+            token_ids = [token_ids]
+        if isinstance(token_ids, np.ndarray):
+            assert len(token_ids.shape) == 1
+        if isinstance(token_ids, torch.Tensor):
+            assert len(token_ids.shape) == 1
+
+        chars = []
+        for char_id in token_ids:
+            if char_id == self.bos_token_id:
+                continue
+            if char_id in [self.eos_token_id, self.pad_token_id]:
+                break
+            chars.append(self.idx_to_str[char_id])
+        return "".join(chars)
+
+    def batch_decode(
+            self,
+            token_ids: Union[List[List[int]], np.ndarray, torch.Tensor]) -> List[str]:
+        if isinstance(token_ids, np.ndarray):
+            assert len(token_ids.shape) == 2
+        if isinstance(token_ids, torch.Tensor):
+            assert len(token_ids.shape) == 2
+
+        return [self.decode(sent) for sent in token_ids]
 
 def from_data(text: List[str], max_lines: int = None) -> CharTokenizer:
     vocab_set = set()
