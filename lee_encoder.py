@@ -3,7 +3,7 @@ from typing import List, Tuple
 import torch
 from torch import nn
 import torch.nn.functional as F
-from transformers.modeling_bert import BertConfig, BertEncoder
+from transformers.modeling_bert import BertConfig, BertModel
 
 T = torch.Tensor
 
@@ -48,10 +48,11 @@ class CharToPseudoWord(nn.Module):
 
         self.is_decoder = is_decoder
         self.conv_count = len(conv_filters)
-        self.max_pool_window = input_dim
+        self.max_pool_window = max_pool_window
         # DO NOT PAD IN DECODER, is handled in forward
         if conv_filters == [0]:
             self.convolutions = None
+            self.conv_count = 0
             self.cnn_output_dim = input_dim
         else:
             self.convolutions = nn.ModuleList([
@@ -138,8 +139,6 @@ class Encoder(nn.Module):
             conv_filters=conv_filters,
             highway_layers=highway_layers,
             max_pool_window=shrink_factor)
-        self.post_pos_emb = nn.Parameter(
-            torch.randn(1, max_length // shrink_factor ,dim))
         config = BertConfig(
             vocab_size=vocab_size,
             is_decoder=False,
@@ -150,7 +149,7 @@ class Encoder(nn.Module):
             hidden_act="relu",
             hidden_dropout_prob=dropout,
             attention_probs_dropout_prob=dropout)
-        self.transformer = BertEncoder(config)
+        self.transformer = BertModel(config)
     # pylint: enable=too-many-arguments
 
     def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T]:
@@ -158,13 +157,9 @@ class Encoder(nn.Module):
             self.embeddings(data) + self.pre_pos_emb[:, :data.size(1)],
             mask)
 
-        encoded = encoded + self.post_pos_emb[:, :encoded.size(1)]
-
-        extended_attention_mask = enc_mask.unsqueeze(1).unsqueeze(2)
-        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-
         transformed = self.transformer(
-            encoded, attention_mask=extended_attention_mask,
-            head_mask=[None] * self.layers)[0]
+            input_ids=None,
+            inputs_embeds=encoded,
+            attention_mask=enc_mask)[0]
 
         return transformed, enc_mask
