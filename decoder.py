@@ -17,6 +17,7 @@ class Decoder(nn.Module):
             char_embedding_dim: int,
             conv_filters: List[int],
             dim: int,
+            nar_output: bool = False,
             shrink_factor: int = 5,
             highway_layers: int = 2,
             layers: int = 6,
@@ -32,6 +33,8 @@ class Decoder(nn.Module):
         self.layers = layers
         self.char_vocabulary_size = char_vocabulary_size
         self.shrink_factor = shrink_factor
+        self.nar_output = nar_output
+        self.char_embedding_dim = char_embedding_dim
 
         if encoder is not None:
             self.char_embeddings = encoder.char_embeddings
@@ -61,15 +64,20 @@ class Decoder(nn.Module):
             attention_probs_dropout_prob=dropout)
         self.transformer = BertModel(config)
 
-        self.state_to_lstm_c = nn.Sequential(
-            nn.Linear(dim, char_embedding_dim),
-            nn.Tanh())
-        self.state_to_lstm_h = nn.Sequential(
-            nn.Linear(dim, char_embedding_dim),
-            nn.Tanh())
+        if self.nar_output:
+            self.nar_proj = nn.Linear(
+                dim, shrink_factor * char_embedding_dim)
+        else:
+            self.state_to_lstm_c = nn.Sequential(
+                nn.Linear(dim, char_embedding_dim))
+                #nn.Tanh())
+            self.state_to_lstm_h = nn.Sequential(
+                nn.Linear(dim, char_embedding_dim))
+                #nn.Tanh())
 
-        self.char_decoder_rnn = nn.LSTM(
-            char_embedding_dim, char_embedding_dim, batch_first=True)
+            self.char_decoder_rnn = nn.LSTM(
+                char_embedding_dim, char_embedding_dim, batch_first=True)
+
         self.output_proj = nn.Linear(char_embedding_dim, char_vocabulary_size)
         #self.output_proj = nn.Linear(dim, char_vocabulary_size)
     # pylint: enable=too-many-arguments
@@ -120,43 +128,58 @@ class Decoder(nn.Module):
             encoder_states, encoder_mask, target_ids, target_mask,
             for_training=True)
 
-        decoder_states_h = self.state_to_lstm_h(
-            decoder_states).transpose(0, 1)
-        decoder_states_c = self.state_to_lstm_c(
-            decoder_states).transpose(0, 1)
+        if self.nar_output:
+            decoder_logits = self.output_proj(
+                self.nar_proj(decoder_states).reshape(
+                    batch_size, -1, self.char_embedding_dim))
+            # Decoder logits are now a multiply of the `shrink_factor`
+            # which might include at most `shrink_factor - 1` paddings
+            # for which there are not labels
+            decoder_logits = decoder_logits[:, :target_ids.size(1)]
+            loss_per_char = loss_function(
+                decoder_logits.reshape(-1, self.char_vocabulary_size),
+                target_ids.reshape(-1))
 
-        step_logits = []
-        for i, (state_c, state_h) in enumerate(
-                zip(decoder_states_c, decoder_states_h)):
-            # unsqueeze to have time dimension first, to intialize LSTM
-            # even though the RNN is batch-major
-            state_c, state_h = state_c.unsqueeze(0), state_h.unsqueeze(0)
+            return (
+                loss_per_char * target_mask.reshape(-1)).sum() / target_mask.sum()
+        else:
+            decoder_states_h = self.state_to_lstm_h(
+                decoder_states).transpose(0, 1)
+            decoder_states_c = self.state_to_lstm_c(
+                decoder_states).transpose(0, 1)
 
-            # cut off the correct target side window
-            decode_start = i * self.char_encoder.max_pool_window
-            decode_end = (i + 1) * self.char_encoder.max_pool_window
-            state_target_ids = target_ids[:, decode_start:decode_end]
+            loss_sum = 0
+            mask_sum = 0
+            for i, (state_c, state_h) in enumerate(
+                    zip(decoder_states_c, decoder_states_h)):
+                # unsqueeze to have time dimension first, to intialize LSTM
+                # even though the RNN is batch-major
+                state_c, state_h = state_c.unsqueeze(0), state_h.unsqueeze(0)
 
-            # prepend 1 as a start symbol for the small decoder
-            small_decoder_start = torch.ones(
-                (batch_size, 1), dtype=torch.int64).to(state_target_ids.device)
-            decoder_input = torch.cat(
-                (small_decoder_start, state_target_ids[:, :-1]), dim=1)
+                # cut off the correct target side window
+                decode_start = i * self.char_encoder.max_pool_window
+                decode_end = (i + 1) * self.char_encoder.max_pool_window
+                state_target_ids = target_ids[:, decode_start:decode_end]
+                step_mask = target_mask[:, decode_start:decode_end]
 
-            step_embedded = self.char_embeddings(decoder_input)
-            step_states, _ = self.char_decoder_rnn(
-                step_embedded, (state_h.contiguous(), state_c.contiguous()))
-            step_logits.append(self.output_proj(step_states))
-            #step_logits.append(
-            #    self.output_proj(decoder_states[:, i, :]).unsqueeze(1))
+                # prepend 1 as a start symbol for the small decoder
+                small_decoder_start = torch.ones(
+                    (batch_size, 1), dtype=torch.int64).to(state_target_ids.device)
+                decoder_input = torch.cat(
+                    (small_decoder_start, state_target_ids[:, :-1]), dim=1)
 
-        decoder_logits = torch.cat(step_logits, dim=1)
-        loss_per_char = loss_function(
-            decoder_logits.reshape(-1, self.char_vocabulary_size),
-            target_ids.reshape(-1))
+                step_embedded = self.char_embeddings(decoder_input)
+                step_states, _ = self.char_decoder_rnn(
+                    step_embedded,
+                    (state_h.contiguous(), state_c.contiguous()))
+                this_step_logits = self.output_proj(step_states)
 
-        return (
-            loss_per_char * target_mask.reshape(-1)).sum() / target_mask.sum()
+                step_loss = loss_function(
+                    this_step_logits.reshape(-1, self.char_vocabulary_size),
+                    state_target_ids.reshape(-1))
+                loss_sum += (step_loss * step_mask.reshape(-1)).sum()
+                mask_sum += step_mask.sum()
+            return loss_sum / mask_sum
 
     @torch.no_grad()
     def greedy_decode(
@@ -179,29 +202,35 @@ class Decoder(nn.Module):
                 encoder_states, encoder_mask,
                 decoded,
                 torch.ones_like(decoded, dtype=torch.float),
-                for_training=False)[:, -1:].transpose(0, 1)
+                for_training=False)[:, -1:]
 
-            # this is to initiliaze the small char-level RNN
-            new_chars = [
-                torch.ones((batch_size, 1),
-                           dtype=torch.int64).to(encoder_states.device)]
-            rnn_state = (
-                self.state_to_lstm_h(last_state),
-                self.state_to_lstm_c(last_state))
-            for _ in range(step_size):
-                rnn_output, rnn_state = self.char_decoder_rnn(
-                    self.char_embeddings(new_chars[-1]), rnn_state)
-                next_chars = self.output_proj(rnn_output).argmax(2)
-                new_chars.append(next_chars)
-                finished = finished + (next_chars == eos_token_id)
-            #new_chars.append(self.output_proj(last_state).argmax(2).transpose(0, 1))
+            if self.nar_output:
+                decoder_logits = self.output_proj(
+                    self.nar_proj(last_state).reshape(
+                        batch_size, -1, self.char_embedding_dim))
+                chars_to_append = decoder_logits.argmax(2)
+            else:
+                last_state = last_state.transpose(0, 1)
+                # this is to initiliaze the small char-level RNN
+                new_chars = [
+                    torch.ones((batch_size, 1),
+                               dtype=torch.int64).to(encoder_states.device)]
+                rnn_state = (
+                    self.state_to_lstm_h(last_state),
+                    self.state_to_lstm_c(last_state))
+                for _ in range(step_size):
+                    rnn_output, rnn_state = self.char_decoder_rnn(
+                        self.char_embeddings(new_chars[-1]), rnn_state)
+                    next_chars = self.output_proj(rnn_output).argmax(2)
+                    new_chars.append(next_chars)
+                    finished = finished + (next_chars == eos_token_id)
 
                 #if finished.all():
                 #    break
 
-            # we need to remove the special start for the small RNN decoder
-            to_append = torch.cat(new_chars[1:], dim=1)
-            decoded = torch.cat((decoded, to_append), dim=1)
+                # we need to remove the special start for the small RNN decoder
+                chars_to_append = torch.cat(new_chars[1:], dim=1)
+            decoded = torch.cat((decoded, chars_to_append), dim=1)
             #if finished.all():
             #    break
 
