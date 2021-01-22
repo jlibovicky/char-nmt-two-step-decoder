@@ -40,8 +40,9 @@ class Decoder(nn.Module):
             self.char_embeddings = encoder.char_embeddings
             self.pre_pos_emb = encoder.pre_pos_emb
         else:
-            self.char_embeddings = nn.Embedding(
-                char_vocabulary_size, char_embedding_dim)
+            self.char_embeddings = nn.Sequential(
+                nn.Embedding(char_vocabulary_size, char_embedding_dim),
+                nn.Dropout(dropout))
             self.pre_pos_emb = nn.Parameter(
                 torch.randn(1, max_length, char_embedding_dim))
         self.char_encoder = CharToPseudoWord(
@@ -64,22 +65,32 @@ class Decoder(nn.Module):
             attention_probs_dropout_prob=dropout)
         self.transformer = BertModel(config)
 
-        if self.nar_output:
-            self.nar_proj = nn.Linear(
-                dim, shrink_factor * char_embedding_dim)
-        else:
+        self.nar_proj = nn.Sequential(
+            nn.Linear(dim, 2 * dim),
+            nn.ReLU(),
+            nn.Linear(2 * dim, dim),
+            nn.Dropout(dropout),
+            nn.LayerNorm(dim),
+            nn.Linear(dim, shrink_factor * char_embedding_dim))
+
+        if not self.nar_output:
             self.state_to_lstm_c = nn.Sequential(
-                nn.Linear(dim, char_embedding_dim))
-                #nn.Tanh())
+                nn.Linear(dim, char_embedding_dim),
+                nn.Dropout(dropout))
             self.state_to_lstm_h = nn.Sequential(
-                nn.Linear(dim, char_embedding_dim))
-                #nn.Tanh())
+                nn.Linear(dim, char_embedding_dim),
+                nn.Dropout(dropout))
 
             self.char_decoder_rnn = nn.LSTM(
                 char_embedding_dim, char_embedding_dim, batch_first=True)
 
-        self.output_proj = nn.Linear(char_embedding_dim, char_vocabulary_size)
-        #self.output_proj = nn.Linear(dim, char_vocabulary_size)
+        self.output_proj = nn.Sequential(
+            nn.Linear(char_embedding_dim, 2 * char_embedding_dim),
+            nn.ReLU(),
+            nn.Linear(2 * char_embedding_dim, char_embedding_dim),
+            nn.Dropout(dropout),
+            nn.LayerNorm(char_embedding_dim),
+            nn.Linear(char_embedding_dim, char_vocabulary_size))
     # pylint: enable=too-many-arguments
 
     def _hidden_states(

@@ -15,18 +15,19 @@ class Highway(nn.Module):
     Adapted from:
     https://gist.github.com/dpressel/3b4780bafcef14377085544f44183353
     """
-    def __init__(self, input_size: int) -> None:
+    def __init__(self, input_size: int, dropout: float) -> None:
         super().__init__()
         self.proj = nn.Conv1d(input_size, input_size, kernel_size=1, stride=1)
         self.transform = nn.Conv1d(
             input_size, input_size, kernel_size=1, stride=1)
         self.transform.bias.data.fill_(-2.0)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: T) -> T:
         proj_result = F.relu(self.proj(x))
         proj_gate = torch.sigmoid(self.transform(x))
         gated = (proj_gate * proj_result) + ((1 - proj_gate) * x)
-        return gated
+        return self.dropout(gated)
 
 
 DEFAULT_FILTERS = [200, 200, 250, 250, 300, 300, 300, 300]
@@ -72,7 +73,7 @@ class CharToPseudoWord(nn.Module):
                 padding=max_pool_window // 2))
 
         self.highways = nn.Sequential(
-            *(Highway(intermediate_dim)
+            *(Highway(intermediate_dim, dropout)
               for _ in range(highway_layers)))
 
         self.final_mask_shrink = nn.MaxPool1d(
