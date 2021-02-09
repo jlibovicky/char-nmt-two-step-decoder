@@ -7,6 +7,7 @@ import random
 import sys
 
 import sacrebleu
+from tensorboardX import SummaryWriter
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -14,6 +15,7 @@ import torch.optim as optim
 from char_tokenizer import from_data
 from seq_to_seq import Seq2SeqModel
 from lr_scheduler import NoamLR
+from experiment import experiment_logging, get_timestamp
 
 
 T = torch.Tensor
@@ -86,7 +88,9 @@ def validate(model, batches, loss_function, device, tokenizer):
 
     bleu = sacrebleu.corpus_bleu(decoded_sentences, [target_sentences])
 
-    return loss_sum / len(batches), bleu.score
+    val_samples = zip(target_sentences, decoded_sentences[:10])
+
+    return loss_sum / len(batches), bleu.score, val_samples
 
 
 def main():
@@ -123,7 +127,12 @@ def main():
         type=int)
     parser.add_argument(
         "--vanilla-decoder", action="store_true", default=False)
+    parser.add_argument("--name", default="experiment", type=str)
     args = parser.parse_args()
+
+    experiment_dir = experiment_logging(
+        "experiments", f"{args.name}_{get_timestamp()}", args)
+    tb_writer = SummaryWriter(experiment_dir)
 
     logging.info("Load and binarize data.")
     tokenizer, train_batches = preprocess_data(
@@ -164,22 +173,36 @@ def main():
 
             loss.backward()
 
+            if steps % args.validation_period == 0:
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        tb_writer.add_histogram(name, param.grad, steps)
+
             if steps % args.delay_update == 0:
                 logging.info("Step %d, loss %.4g", steps, loss.item())
+                tb_writer.add_scalar("loss/train", loss, global_step=steps)
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
                 optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
                 torch.cuda.empty_cache()
 
             if steps % args.validation_period == 0:
-                val_loss, val_bleu = validate(
+                val_loss, val_bleu, val_samples = validate(
                     model, val_batches, loss_function, device, tokenizer)
+                tb_writer.add_scalar("loss/val", val_loss, global_step=steps)
+                tb_writer.add_scalar("bleu/val", val_bleu, global_step=steps)
+
+                for i, (ref, hyp) in enumerate(val_samples):
+                    tb_writer.add_text(f"{i + 1}", f"__ref:__ {ref}<br />__hyp:__ {hyp}", steps)
+
                 logging.info(
                     "VALIDATION: Step %d (epoch %d), loss %.4g, BLEU: %.4g",
                     steps, epoch_n + 1, val_loss, val_bleu)
         random.shuffle(train_batches)
 
+    tb_writer.close()
     logging.info("Done.")
 
 
