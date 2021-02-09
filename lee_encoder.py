@@ -56,10 +56,11 @@ class CharToPseudoWord(nn.Module):
             self.conv_count = 0
             self.cnn_output_dim = input_dim
         else:
+            # TODO maybe the correct padding for the decoder is just 2 * i
             self.convolutions = nn.ModuleList([
                 nn.Conv1d(
-                    input_dim, dim, kernel_size=i + 1, stride=1,
-                    padding=(1 - int(is_decoder)) * (i + 1) // 2)
+                    input_dim, dim, kernel_size=2 * i + 1, stride=1,
+                    padding=2 * i if is_decoder else i)
                 for i, dim in enumerate(conv_filters)])
             self.cnn_output_dim = sum(conv_filters)
 
@@ -70,36 +71,29 @@ class CharToPseudoWord(nn.Module):
             nn.GroupNorm(1, intermediate_dim),
             nn.MaxPool1d(
                 max_pool_window, max_pool_window,
-                padding=max_pool_window // 2))
+                padding=0, ceil_mode=True))
 
         self.highways = nn.Sequential(
             *(Highway(intermediate_dim, dropout)
               for _ in range(highway_layers)))
 
         self.final_mask_shrink = nn.MaxPool1d(
-            max_pool_window, max_pool_window, padding=max_pool_window // 2)
+            max_pool_window, max_pool_window, padding=0, ceil_mode=True)
 
 
     def forward(self, embedded_chars: T, mask: T) -> Tuple[T, T]:
         batch_size = embedded_chars.size(0)
-        if self.is_decoder:
-            padding = torch.ones(
-                (batch_size, self.conv_count,
-                 embedded_chars.size(2))).to(embedded_chars.device)
-            embedded_chars = torch.cat(
-                [padding, embedded_chars], dim=1)
         embedded_chars = embedded_chars.transpose(2, 1)
 
         if self.convolutions is not None:
-            if self.is_decoder:
-                convolved_char = torch.cat([
-                    conv(embedded_chars[:, :, self.conv_count - i:])
-                    for i, conv in enumerate(self.convolutions)], dim=1)
-            else:
-                convolved_char = torch.cat([
-                    conv(embedded_chars)[:, :, 1:] if i % 2 == 1
-                    else conv(embedded_chars)
-                    for i, conv in enumerate(self.convolutions)], dim=1)
+            conv_outs = []
+            for i, conv in enumerate(self.convolutions):
+                conv_i_out = conv(embedded_chars)
+                if self.is_decoder and i > 0:
+                    conv_i_out = conv_i_out[:, :, :-2 * i]
+                conv_outs.append(conv_i_out)
+
+            convolved_char = torch.cat(conv_outs, dim=1)
         else:
             convolved_char = embedded_chars
 
@@ -155,7 +149,7 @@ class Encoder(nn.Module):
 
     def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T]:
         encoded, enc_mask = self.char_encoder(
-            self.embeddings(data) + self.pre_pos_emb[:, :data.size(1)],
+            self.embeddings(data),# + self.pre_pos_emb[:, :data.size(1)],
             mask)
 
         transformed = self.transformer(
