@@ -65,32 +65,29 @@ class Decoder(nn.Module):
             attention_probs_dropout_prob=dropout)
         self.transformer = BertModel(config)
 
-        self.nar_proj = nn.Sequential(
-            nn.Linear(dim, 2 * dim),
-            nn.ReLU(),
-            nn.Linear(2 * dim, dim),
-            nn.Dropout(dropout),
-            nn.LayerNorm(dim),
-            nn.Linear(dim, shrink_factor * char_embedding_dim))
+        #self.nar_proj = nn.Sequential(
+        #    nn.Linear(dim, 2 * dim),
+        #    nn.ReLU(),
+        #    nn.Linear(2 * dim, dim),
+        #    nn.Dropout(dropout),
+        #    nn.LayerNorm(dim),
+        #    nn.Linear(dim, shrink_factor * char_embedding_dim))
+        self.nar_proj = nn.Linear(dim, shrink_factor * char_embedding_dim)
 
         if not self.nar_output:
-            self.state_to_lstm_c = nn.Sequential(
-                nn.Linear(dim, char_embedding_dim),
-                nn.Dropout(dropout))
-            self.state_to_lstm_h = nn.Sequential(
-                nn.Linear(dim, char_embedding_dim),
-                nn.Dropout(dropout))
-
             self.char_decoder_rnn = nn.LSTM(
-                char_embedding_dim, char_embedding_dim, batch_first=True)
+                2 * char_embedding_dim, 2 * char_embedding_dim, batch_first=True)
+            self.output_proj = nn.Linear(3 * char_embedding_dim, char_vocabulary_size)
+        else:
+            self.output_proj = nn.Linear(char_embedding_dim, char_vocabulary_size)
 
-        self.output_proj = nn.Sequential(
-            nn.Linear(char_embedding_dim, 2 * char_embedding_dim),
-            nn.ReLU(),
-            nn.Linear(2 * char_embedding_dim, char_embedding_dim),
-            nn.Dropout(dropout),
-            nn.LayerNorm(char_embedding_dim),
-            nn.Linear(char_embedding_dim, char_vocabulary_size))
+        #self.output_proj = nn.Sequential(
+        #    nn.Linear(char_embedding_dim, 2 * char_embedding_dim),
+        #    nn.ReLU(),
+        #    nn.Linear(2 * char_embedding_dim, char_embedding_dim),
+        #    nn.Dropout(dropout),
+        #    nn.LayerNorm(char_embedding_dim),
+        #    nn.Linear(char_embedding_dim, char_vocabulary_size))
     # pylint: enable=too-many-arguments
 
     def _hidden_states(
@@ -103,6 +100,7 @@ class Decoder(nn.Module):
         """Hidden states are used as input to the decoding LSTMs."""
         batch_size = target_ids.size(0)
         to_prepend = torch.ones(
+            #(batch_size, self.shrink_factor),
             (batch_size, self.shrink_factor),
             dtype=torch.int64).to(target_ids.device)
 
@@ -139,58 +137,56 @@ class Decoder(nn.Module):
             encoder_states, encoder_mask, target_ids, target_mask,
             for_training=True)
 
+        # Char states are now a multiply of the `shrink_factor`
+        # which might include at most `shrink_factor - 1` paddings
+        # for which there are not labels
+        char_states = self.nar_proj(decoder_states).reshape(
+            batch_size, -1, self.char_embedding_dim)[:, :target_ids.size(1)]
+
         if self.nar_output:
-            decoder_logits = self.output_proj(
-                self.nar_proj(decoder_states).reshape(
-                    batch_size, -1, self.char_embedding_dim))
-            # Decoder logits are now a multiply of the `shrink_factor`
-            # which might include at most `shrink_factor - 1` paddings
-            # for which there are not labels
-            decoder_logits = decoder_logits[:, :target_ids.size(1)]
+            decoder_logits = self.output_proj(char_states)
             loss_per_char = loss_function(
                 decoder_logits.reshape(-1, self.char_vocabulary_size),
                 target_ids.reshape(-1))
 
             return (
-                loss_per_char * target_mask.reshape(-1)).sum() / target_mask.sum()
-        else:
-            decoder_states_h = self.state_to_lstm_h(
-                decoder_states).transpose(0, 1)
-            decoder_states_c = self.state_to_lstm_c(
-                decoder_states).transpose(0, 1)
+                (loss_per_char * target_mask.reshape(-1)).sum() /
+                target_mask.sum())
 
-            loss_sum = 0
-            mask_sum = 0
-            for i, (state_c, state_h) in enumerate(
-                    zip(decoder_states_c, decoder_states_h)):
-                # unsqueeze to have time dimension first, to intialize LSTM
-                # even though the RNN is batch-major
-                state_c, state_h = state_c.unsqueeze(0), state_h.unsqueeze(0)
+        # DECODING WITH LSTM
+        small_decoder_start = torch.ones(
+            (batch_size, 1), dtype=torch.int64).to(target_ids.device)
+        pad_target_ids = torch.cat(
+            (small_decoder_start, target_ids), dim=1)
 
-                # cut off the correct target side window
-                decode_start = i * self.char_encoder.max_pool_window
-                decode_end = (i + 1) * self.char_encoder.max_pool_window
-                state_target_ids = target_ids[:, decode_start:decode_end]
-                step_mask = target_mask[:, decode_start:decode_end]
+        loss_sum = 0
+        mask_sum = 0
+        rnn_state = None
+        for i in range(decoder_states.size(1)):
+            # cut off the correct target side window
+            decode_start = i * self.shrink_factor
+            decode_end = min(
+                target_mask.size(1),
+                (i + 1) * self.char_encoder.max_pool_window)
+            step_input_ids = pad_target_ids[:, decode_start:decode_end]
+            step_output_ids = pad_target_ids[:, decode_start + 1: decode_end + 1]
 
-                # prepend 1 as a start symbol for the small decoder
-                small_decoder_start = torch.ones(
-                    (batch_size, 1), dtype=torch.int64).to(state_target_ids.device)
-                decoder_input = torch.cat(
-                    (small_decoder_start, state_target_ids[:, :-1]), dim=1)
+            step_mask = target_mask[:, decode_start:decode_end]
+            step_char_states = char_states[:, decode_start:decode_end]
 
-                step_embedded = self.char_embeddings(decoder_input)
-                step_states, _ = self.char_decoder_rnn(
-                    step_embedded,
-                    (state_h.contiguous(), state_c.contiguous()))
-                this_step_logits = self.output_proj(step_states)
+            step_embedded = self.char_embeddings(step_input_ids)
+            step_states, rnn_state = self.char_decoder_rnn(
+                torch.cat((step_embedded, step_char_states), dim=2),
+                rnn_state)
+            this_step_logits = self.output_proj(
+                torch.cat([step_states, step_char_states], dim=2))
 
-                step_loss = loss_function(
-                    this_step_logits.reshape(-1, self.char_vocabulary_size),
-                    state_target_ids.reshape(-1))
-                loss_sum += (step_loss * step_mask.reshape(-1)).sum()
-                mask_sum += step_mask.sum()
-            return loss_sum / mask_sum
+            step_loss = loss_function(
+                this_step_logits.reshape(-1, self.char_vocabulary_size),
+                step_output_ids.reshape(-1))
+            loss_sum += (step_loss * step_mask.reshape(-1)).sum()
+            mask_sum += step_mask.sum()
+        return loss_sum / mask_sum
 
     @torch.no_grad()
     def greedy_decode(
@@ -198,54 +194,56 @@ class Decoder(nn.Module):
             encoder_states: T,
             encoder_mask: T,
             eos_token_id: int,
-            max_len: int = 200) -> Tuple[T, T]:
+            max_len: int = 300) -> Tuple[T, T]:
         batch_size = encoder_states.size(0)
         step_size = self.char_encoder.max_pool_window
 
         decoded = torch.ones(
             (batch_size, 0),
             dtype=torch.int64).to(encoder_states.device)
+        next_chars = torch.ones(
+            (batch_size, 1),
+            dtype=torch.int64).to(encoder_states.device)
         finished = torch.tensor(
             [False] * batch_size).to(encoder_states.device)
 
+        rnn_state = None
         for _ in range(max_len // step_size + 1):
             last_state = self._hidden_states(
                 encoder_states, encoder_mask,
                 decoded,
                 torch.ones_like(decoded, dtype=torch.float),
                 for_training=False)[:, -1:]
+            char_states = self.nar_proj(last_state).reshape(
+                batch_size, -1, self.char_embedding_dim)
 
             if self.nar_output:
-                decoder_logits = self.output_proj(
-                    self.nar_proj(last_state).reshape(
-                        batch_size, -1, self.char_embedding_dim))
+                decoder_logits = self.output_proj(char_states)
                 chars_to_append = decoder_logits.argmax(2)
             else:
                 last_state = last_state.transpose(0, 1)
                 # this is to initiliaze the small char-level RNN
-                new_chars = [
-                    torch.ones((batch_size, 1),
-                               dtype=torch.int64).to(encoder_states.device)]
-                rnn_state = (
-                    self.state_to_lstm_h(last_state),
-                    self.state_to_lstm_c(last_state))
-                for _ in range(step_size):
+                new_chars = [decoded[:, -1:]]
+                for i in range(step_size):
+                    embeded_prev = self.char_embeddings(next_chars)
+                    rnn_input = torch.cat(
+                        (embeded_prev, char_states[:, i:i+1]), dim=2)
                     rnn_output, rnn_state = self.char_decoder_rnn(
-                        self.char_embeddings(new_chars[-1]), rnn_state)
-                    next_chars = self.output_proj(rnn_output).argmax(2)
+                        rnn_input, rnn_state)
+                    next_chars = self.output_proj(
+                        torch.cat([rnn_output, char_states[:, i:i+1]], dim=2)).argmax(2)
                     new_chars.append(next_chars)
                     finished = finished + (next_chars == eos_token_id)
 
-                #if finished.all():
-                #    break
-
+                    if finished.all():
+                        break
                 # we need to remove the special start for the small RNN decoder
                 chars_to_append = torch.cat(new_chars[1:], dim=1)
             decoded = torch.cat((decoded, chars_to_append), dim=1)
-            #if finished.all():
-            #    break
+            if finished.all():
+                break
 
-        return decoded, None
+        return decoded[:, 1:], None
 
 
 class VanillaDecoder(nn.Module):
