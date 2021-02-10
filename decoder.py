@@ -37,20 +37,21 @@ class Decoder(nn.Module):
         self.char_embedding_dim = char_embedding_dim
 
         if encoder is not None:
-            self.char_embeddings = encoder.char_embeddings
+            self.char_embeddings = encoder.embeddings
             self.pre_pos_emb = encoder.pre_pos_emb
+            self.char_encoder = encoder.char_encoder
         else:
             self.char_embeddings = nn.Sequential(
                 nn.Embedding(char_vocabulary_size, char_embedding_dim),
                 nn.Dropout(dropout))
             self.pre_pos_emb = nn.Parameter(
                 torch.randn(1, max_length, char_embedding_dim))
-        self.char_encoder = CharToPseudoWord(
-            char_embedding_dim, intermediate_dim=dim,
-            conv_filters=conv_filters,
-            max_pool_window=shrink_factor,
-            highway_layers=highway_layers,
-            is_decoder=True)
+            self.char_encoder = CharToPseudoWord(
+                char_embedding_dim, intermediate_dim=dim,
+                conv_filters=conv_filters,
+                max_pool_window=shrink_factor,
+                highway_layers=highway_layers,
+                is_decoder=True)
 
         config = BertConfig(
             vocab_size=dim,

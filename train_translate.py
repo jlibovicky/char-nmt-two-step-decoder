@@ -127,6 +127,8 @@ def main():
         type=int)
     parser.add_argument(
         "--vanilla-decoder", action="store_true", default=False)
+    parser.add_argument(
+        "--share-char-repr", action="store_true", default=False)
     parser.add_argument("--name", default="experiment", type=str)
     args = parser.parse_args()
 
@@ -154,7 +156,8 @@ def main():
         layers=args.layers,
         attention_heads=args.attention_heads,
         dropout=args.dropout,
-        vanilla_decoder=args.vanilla_decoder).to(device)
+        vanilla_decoder=args.vanilla_decoder,
+        share_char_repr=args.share_char_repr).to(device)
 
     loss_function = nn.CrossEntropyLoss(reduction='none')
     optimizer = optim.Adam(model.parameters())

@@ -39,7 +39,8 @@ class Seq2SeqModel(nn.Module):
             highway_layers=highway_layers,
             ff_dim=ff_dim, layers=layers,
             attention_heads=attention_heads,
-            dropout=dropout)
+            dropout=dropout,
+            decoder_style_padding=share_char_repr)
 
         if vanilla_decoder:
             self.decoder = VanillaDecoder(
@@ -74,7 +75,9 @@ class Seq2SeqModel(nn.Module):
         return loss
 
     @torch.no_grad()
-    def greedy_decode(self, src_batch: T, input_mask: T, eos_token_id: int, max_len: int = 100):
+    def greedy_decode(
+            self, src_batch: T, input_mask: T,
+            eos_token_id: int, max_len: int = 100) -> Tuple[T, T]:
         encoder_states, encoded_mask = self.encoder(src_batch, input_mask)
         decoded, mask = self.decoder.greedy_decode(
             encoder_states, encoded_mask, eos_token_id, max_len=max_len)

@@ -119,7 +119,8 @@ class Encoder(nn.Module):
             layers: int = 6,
             attention_heads: int = 8,
             dropout: float = 0.1,
-            max_length: int = 600) -> None:
+            max_length: int = 600,
+            decoder_style_padding: bool = False) -> None:
         super().__init__()
 
         self.dim = dim
@@ -133,7 +134,9 @@ class Encoder(nn.Module):
             char_embedding_dim, intermediate_dim=dim,
             conv_filters=conv_filters,
             highway_layers=highway_layers,
-            max_pool_window=shrink_factor)
+            max_pool_window=shrink_factor,
+            dropout=dropout,
+            is_decoder=decoder_style_padding)
         config = BertConfig(
             vocab_size=vocab_size,
             is_decoder=False,
