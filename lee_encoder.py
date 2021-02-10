@@ -65,24 +65,27 @@ class CharToPseudoWord(nn.Module):
             self.cnn_output_dim = sum(conv_filters)
 
         self.after_cnn = nn.Sequential(
-            nn.Conv1d(self.cnn_output_dim, intermediate_dim, 1, 1),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.GroupNorm(1, intermediate_dim),
             nn.MaxPool1d(
                 max_pool_window, max_pool_window,
                 padding=0, ceil_mode=True))
 
         self.highways = nn.Sequential(
-            *(Highway(intermediate_dim, dropout)
+            *(Highway(self.cnn_output_dim, dropout)
               for _ in range(highway_layers)))
+
+        self.after_highways = nn.Sequential(
+            nn.Linear(self.cnn_output_dim, intermediate_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(intermediate_dim))
 
         self.final_mask_shrink = nn.MaxPool1d(
             max_pool_window, max_pool_window, padding=0, ceil_mode=True)
 
 
     def forward(self, embedded_chars: T, mask: T) -> Tuple[T, T]:
-        batch_size = embedded_chars.size(0)
         embedded_chars = embedded_chars.transpose(2, 1)
 
         if self.convolutions is not None:
@@ -98,10 +101,11 @@ class CharToPseudoWord(nn.Module):
             convolved_char = embedded_chars
 
         shrinked = self.after_cnn(convolved_char)
-        output = self.highways(shrinked)
+        output = self.highways(shrinked).transpose(2, 1)
+        output = self.after_highways(output)
         shrinked_mask = self.final_mask_shrink(mask.unsqueeze(1)).squeeze(1)
 
-        return output.transpose(2, 1), shrinked_mask
+        return output, shrinked_mask
 
 
 class Encoder(nn.Module):

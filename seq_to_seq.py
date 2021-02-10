@@ -1,6 +1,6 @@
 """Encoder-decoder model."""
 
-from typing import List
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
