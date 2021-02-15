@@ -77,9 +77,29 @@ class Seq2SeqModel(nn.Module):
     @torch.no_grad()
     def greedy_decode(
             self, src_batch: T, input_mask: T,
-            eos_token_id: int, max_len: int = 100) -> Tuple[T, T]:
+            eos_token_id: int, max_len: int = 400) -> Tuple[T, T]:
         encoder_states, encoded_mask = self.encoder(src_batch, input_mask)
         decoded, mask = self.decoder.greedy_decode(
             encoder_states, encoded_mask, eos_token_id, max_len=max_len)
 
         return decoded, mask
+
+    @property
+    def char_level_param_count(self) -> int:
+        """Number of parameters in character processing layers."""
+
+        relevant_parts = [self.encoder.embeddings, self.encoder.char_encoder]
+
+        if isinstance(self.decoder, VanillaDecoder):
+            relevant_parts.append(self.decoder.transformer.embeddings)
+        else:
+            relevant_parts.extend([
+                self.decoder.nar_proj, self.decoder.output_proj])
+            if not self.decoder.nar_output:
+                relevant_parts.append(self.decoder.char_decoder_rnn)
+            if not self.decoder.char_embeddings not in relevant_parts:
+                relevant_parts.extend([
+                    self.decoder.char_embeddings, self.decoder.char_encoder])
+
+        return sum(p.numel() for part in relevant_parts
+                   for p in part.parameters())

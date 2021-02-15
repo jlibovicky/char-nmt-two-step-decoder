@@ -159,6 +159,12 @@ def main():
         vanilla_decoder=args.vanilla_decoder,
         share_char_repr=args.share_char_repr).to(device)
 
+    char_params = model.char_level_param_count
+    logging.info(
+        "Parameters in char processing layers %d, i.e. as "
+        "%d word vocabulary.",
+        char_params, char_params // args.dim)
+
     loss_function = nn.CrossEntropyLoss(reduction='none')
     optimizer = optim.Adam(model.parameters())
     scheduler = NoamLR(optimizer, args.warmup)
