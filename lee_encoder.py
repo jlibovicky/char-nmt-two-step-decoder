@@ -27,10 +27,31 @@ class Highway(nn.Module):
         proj_result = F.relu(self.proj(x))
         proj_gate = torch.sigmoid(self.transform(x))
         gated = (proj_gate * proj_result) + ((1 - proj_gate) * x)
-        return self.dropout(gated)
+        return gated
 
 
-DEFAULT_FILTERS = [200, 200, 250, 250, 300, 300, 300, 300]
+class TransformerFeedForward(nn.Module):
+    """Feedforward sublayer from the Transformer."""
+
+    def __init__(
+            self, input_size: int,
+            intermediate_size: int, dropout: float) -> None:
+        super().__init__()
+
+        self.sublayer = nn.Sequential(
+            nn.Linear(input_size, intermediate_size),
+            nn.ReLU(),
+            nn.Linear(intermediate_size, input_size),
+            nn.Dropout(dropout))
+
+        self.norm = nn.LayerNorm(input_size)
+
+    def forward(self, input_tensor: T) -> T:
+        output = self.sublayer(input_tensor)
+        return self.norm(output + input_tensor)
+
+
+DEFAULT_FILTERS = [128, 256, 512, 512]
 
 
 class CharToPseudoWord(nn.Module):
@@ -42,6 +63,7 @@ class CharToPseudoWord(nn.Module):
             # pylint: enable=dangerous-default-value
             intermediate_dim: int = 512,
             highway_layers: int = 2,
+            ff_layers: int = 2,
             max_pool_window: int = 5,
             dropout: float = 0.1,
             is_decoder: bool = False) -> None:
@@ -81,6 +103,11 @@ class CharToPseudoWord(nn.Module):
             nn.Dropout(dropout),
             nn.LayerNorm(intermediate_dim))
 
+        self.ff_layers = nn.Sequential(
+            *(TransformerFeedForward(
+                intermediate_dim, 2 * intermediate_dim, dropout)
+              for _ in range(ff_layers)))
+
         self.final_mask_shrink = nn.MaxPool1d(
             max_pool_window, max_pool_window, padding=0, ceil_mode=True)
 
@@ -103,6 +130,7 @@ class CharToPseudoWord(nn.Module):
         shrinked = self.after_cnn(convolved_char)
         output = self.highways(shrinked).transpose(2, 1)
         output = self.after_highways(output)
+        output = self.ff_layers(output)
         shrinked_mask = self.final_mask_shrink(mask.unsqueeze(1)).squeeze(1)
 
         return output, shrinked_mask
@@ -119,6 +147,7 @@ class Encoder(nn.Module):
             dim: int = 512,
             shrink_factor: int = 5,
             highway_layers: int = 2,
+            char_ff_layers: int = 2,
             ff_dim: int = None,
             layers: int = 6,
             attention_heads: int = 8,
@@ -138,6 +167,7 @@ class Encoder(nn.Module):
             char_embedding_dim, intermediate_dim=dim,
             conv_filters=conv_filters,
             highway_layers=highway_layers,
+            ff_layers=char_ff_layers,
             max_pool_window=shrink_factor,
             dropout=dropout,
             is_decoder=decoder_style_padding)

@@ -117,6 +117,7 @@ def main():
     parser.add_argument("--attention-heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--highway-layers", type=int, default=2)
+    parser.add_argument("--char-ff-layers", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--delay-update", type=int, default=1)
@@ -152,6 +153,7 @@ def main():
         shrink_factor=args.shrink_factor,
         nar_output=args.nar_output,
         highway_layers=args.highway_layers,
+        char_ff_layers=args.char_ff_layers,
         ff_dim=2 * args.dim,
         layers=args.layers,
         attention_heads=args.attention_heads,

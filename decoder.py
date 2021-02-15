@@ -20,6 +20,7 @@ class Decoder(nn.Module):
             nar_output: bool = False,
             shrink_factor: int = 5,
             highway_layers: int = 2,
+            char_ff_layers: int = 2,
             layers: int = 6,
             ff_dim: int = None,
             attention_heads: int = 8,
@@ -51,6 +52,7 @@ class Decoder(nn.Module):
                 conv_filters=conv_filters,
                 max_pool_window=shrink_factor,
                 highway_layers=highway_layers,
+                ff_layers=char_ff_layers,
                 is_decoder=True)
 
         config = BertConfig(
@@ -205,8 +207,10 @@ class Decoder(nn.Module):
         next_chars = torch.ones(
             (batch_size, 1),
             dtype=torch.int64).to(encoder_states.device)
+        # pylint: disable=not-callable
         finished = torch.tensor(
             [False] * batch_size).to(encoder_states.device)
+        # pylint: enable=not-callable
 
         rnn_state = None
         for _ in range(max_len // step_size + 1):
@@ -338,8 +342,10 @@ class VanillaDecoder(nn.Module):
         decoded = torch.ones(
             (batch_size, 0),
             dtype=torch.int64).to(encoder_states.device)
+        # pylint: disable=not-callable
         finished = torch.tensor(
             [False] * batch_size).to(encoder_states.device)
+        # pylint: enable=not-callable
 
         for _ in range(max_len):
             last_state = self._hidden_states(
