@@ -2,10 +2,12 @@
 
 import argparse
 import logging
+import os
 from typing import Iterable, Dict
 import random
 import sys
 
+import joblib
 import sacrebleu
 from tensorboardX import SummaryWriter
 import torch
@@ -24,7 +26,9 @@ T = torch.Tensor
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
 
 
-def preprocess_data(train_src, train_tgt, batch_size, tokenizer=None):
+def preprocess_data(
+        train_src, train_tgt, batch_size, max_vocab_size: int,
+        tokenizer=None, max_lines: int = 1000000):
     logging.info("Loading file %s.", train_src.name)
     src_text = [line.strip() for line in train_src]
     logging.info("Loading file %s.", train_tgt.name)
@@ -32,7 +36,10 @@ def preprocess_data(train_src, train_tgt, batch_size, tokenizer=None):
 
     if tokenizer is None:
         logging.info("Initializing tokenizer.")
-        tokenizer = from_data(src_text + tgt_text)
+        all_data = src_text + tgt_text
+        random.shuffle(all_data)
+        tokenizer = from_data(
+            all_data, max_vocab=max_vocab_size, max_lines=max_lines)
 
     batches = []
     src_batch, tgt_batch = [], []
@@ -63,10 +70,16 @@ def preprocess_data(train_src, train_tgt, batch_size, tokenizer=None):
     return tokenizer, batches
 
 
+def cpu_save_state_dict(model, experiment_dir, name):
+    state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
+    torch.save(state_dict, os.path.join(experiment_dir, name))
+
+
 @torch.no_grad()
 def validate(model, batches, loss_function, device, tokenizer):
     model.eval()
     loss_sum = 0
+    source_sentences = []
     decoded_sentences = []
     target_sentences = []
     for i, ((src_data, src_mask), (tgt_data, tgt_mask)) in enumerate(batches):
@@ -77,6 +90,7 @@ def validate(model, batches, loss_function, device, tokenizer):
         loss_sum += loss
         decoded_ids = model.greedy_decode(
             src_data, src_mask, tokenizer.eos_token_id)[0]
+        source_sentences.extend(tokenizer.batch_decode(src_data))
         decoded_sentences.extend(tokenizer.batch_decode(decoded_ids))
         target_sentences.extend(tokenizer.batch_decode(tgt_data))
 
@@ -87,10 +101,13 @@ def validate(model, batches, loss_function, device, tokenizer):
     model.train()
 
     bleu = sacrebleu.corpus_bleu(decoded_sentences, [target_sentences])
+    chrf = sacrebleu.corpus_chrf(decoded_sentences, [target_sentences])
 
-    val_samples = zip(target_sentences, decoded_sentences[:10])
+    val_samples = zip(
+        source_sentences, target_sentences, decoded_sentences)
+    val_loss = loss_sum / len(batches)
 
-    return loss_sum / len(batches), bleu.score, val_samples
+    return val_loss, bleu.score, chrf.score, val_samples
 
 
 def main():
@@ -108,6 +125,7 @@ def main():
     parser.add_argument(
         "test_src", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--max-vocab", type=int, default=300)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--char-emb-dim", type=int, default=64)
     parser.add_argument("--dim", type=int, default=512)
@@ -139,9 +157,11 @@ def main():
 
     logging.info("Load and binarize data.")
     tokenizer, train_batches = preprocess_data(
-        args.train_src, args.train_tgt, args.batch_size)
+        args.train_src, args.train_tgt, args.batch_size, args.max_vocab)
     _, val_batches = preprocess_data(
-        args.val_src, args.val_tgt, args.batch_size, tokenizer=tokenizer)
+        args.val_src, args.val_tgt, args.batch_size, args.max_vocab,
+        tokenizer=tokenizer)
+    joblib.dump(tokenizer, os.path.join(experiment_dir, "tokenizer.joblib"))
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info("Initializing model on device %s.", device)
@@ -173,6 +193,7 @@ def main():
 
     logging.info("Training starts.")
     steps = 0
+    best_bleu = 0.0
     for epoch_n in range(args.epochs):
         logging.info("Epoch %d starts, so far %d steps.", epoch_n + 1, steps)
         for (src_data, src_mask), (tgt_data, tgt_mask) in train_batches:
@@ -200,17 +221,41 @@ def main():
                 torch.cuda.empty_cache()
 
             if steps % args.validation_period == 0:
-                val_loss, val_bleu, val_samples = validate(
+                val_loss, val_bleu, val_chrf, val_samples = validate(
                     model, val_batches, loss_function, device, tokenizer)
                 tb_writer.add_scalar("loss/val", val_loss, global_step=steps)
                 tb_writer.add_scalar("bleu/val", val_bleu, global_step=steps)
+                tb_writer.add_scalar("chrf/val", val_chrf, global_step=steps)
 
-                for i, (ref, hyp) in enumerate(val_samples):
-                    tb_writer.add_text(f"{i + 1}", f"__ref:__ {ref}<br />__hyp:__ {hyp}", steps)
+                for i, (src, ref, hyp) in enumerate(val_samples):
+                    tb_writer.add_text(
+                        f"{i + 1}",
+                        f"`src:` {src}  \n"
+                        f"`ref:` {ref}  \n"
+                        f"`hyp:` {hyp}", steps)
+                    if i >= 9:
+                        break
+
+                val_out_path = os.path.join(experiment_dir, "validation.out")
+                with open(val_out_path, "w") as f_val:
+                    for _, _, hyp in val_samples:
+                        print(hyp, file=f_val)
 
                 logging.info(
-                    "VALIDATION: Step %d (epoch %d), loss %.4g, BLEU: %.4g",
-                    steps, epoch_n + 1, val_loss, val_bleu)
+                    "VALIDATION: Step %d (epoch %d), loss %.4g, "
+                    "BLEU: %.4g chrF: %.4g",
+                    steps, epoch_n + 1, val_loss, val_bleu, val_chrf)
+
+                if val_bleu > best_bleu:
+                    logging.info("New best BLEU, saving model.")
+                    best_bleu = val_bleu
+                    cpu_save_state_dict(model, experiment_dir, "best_bleu.pt")
+                cpu_save_state_dict(
+                    model, experiment_dir, "last_checkpoint.pt")
+                torch.save(
+                    optimizer.state_dict(),
+                    os.path.join(experiment_dir, "last_optimizer.pt"))
+
         random.shuffle(train_batches)
 
     tb_writer.close()

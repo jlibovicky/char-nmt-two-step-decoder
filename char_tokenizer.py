@@ -4,6 +4,7 @@ Implements basics of the Huggingface's tokenizer API.
 """
 
 from typing import List, Union
+from collections import Counter
 
 import numpy as np
 import torch
@@ -13,6 +14,7 @@ SPECIAL_SYMBOLS = ["<pad>", "<s>", "</s>", "<unk>"]
 
 
 class CharTokenizer(object):
+    """Char-level tokenizer that roughly floows the Huggingface API."""
     def __init__(self, tokens: List[str]) -> None:
         super().__init__()
         self.idx_to_str = tokens
@@ -117,13 +119,23 @@ class CharTokenizer(object):
 
         return [self.decode(sent) for sent in token_ids]
 
-def from_data(text: List[str], max_lines: int = None) -> CharTokenizer:
-    vocab_set = set()
+
+def from_data(
+        text: List[str],
+        max_vocab: int = None,
+        max_lines: int = None) -> CharTokenizer:
+    """Create char-level tokenizer from data."""
+    vocab_counter = Counter()
     for i, sent in enumerate(text):
         if max_lines is not None and i >= max_lines:
             break
-        for char in sent:
-            vocab_set.add(char)
+        vocab_counter.update(sent)
 
-    vocab = SPECIAL_SYMBOLS + sorted(vocab_set)
+    if max_vocab is None:
+        vocab_list = list(vocab_counter.values())
+    else:
+        vocab_list = [
+            tok for tok, _ in vocab_counter.most_common(max_vocab)]
+
+    vocab = SPECIAL_SYMBOLS + vocab_list
     return CharTokenizer(vocab)
