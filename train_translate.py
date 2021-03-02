@@ -8,6 +8,7 @@ import random
 import sys
 
 import joblib
+import yaml
 import sacrebleu
 from tensorboardX import SummaryWriter
 import torch
@@ -160,7 +161,35 @@ def main():
     parser.add_argument(
         "--share-char-repr", action="store_true", default=False)
     parser.add_argument("--name", default="experiment", type=str)
+    parser.add_argument(
+        "--continue-training", type=str, default=None,
+        help="Directory with experiment that should be continued. The model "
+             "and the hyperparatemers get loaded from the directory, the "
+             "datasets are taken from args.")
     args = parser.parse_args()
+
+    if args.continue_training is not None:
+        logging.info("Loading hyper-parameters from the previous experiement.")
+        with open(os.path.join(args.continue_training, "args")) as f_args:
+            previous_args = yaml.load(f_args)
+
+        args.char_emb_dim = previous_args["char_emb_dim"]
+        args.dim = previous_args["dim"]
+        args.layers = previous_args["layers"]
+        args.convolutions = previous_args["convolutions"]
+        args.shrink_factor = previous_args["shrink_factor"]
+        args.attention_heads = previous_args["attention_heads"]
+        args.dropout = previous_args["dropout"]
+        args.highway_layers = previous_args["highway_layers"]
+        args.char_ff_layers = previous_args["char_ff_layers"]
+        args.vanilla_decoder = previous_args["vanilla_decoder"]
+        args.share_char_repr = previous_args["share_char_repr"]
+
+        logging.info("Loading tokenizer from the previous experiement.")
+        tokenizer = joblib.load(
+            os.path.join(args.continue_training, "tokenizer.joblib"))
+    else:
+        tokenizer = None
 
     experiment_dir = experiment_logging(
         "experiments", f"{args.name}_{get_timestamp()}", args)
@@ -169,7 +198,7 @@ def main():
     logging.info("Load and binarize data.")
     tokenizer, train_batches = preprocess_data(
         args.train_src, args.train_tgt, args.batch_size, args.max_vocab,
-        args.tokenizer_type)
+        args.tokenizer_type, tokenizer=tokenizer)
     _, val_batches = preprocess_data(
         args.val_src, args.val_tgt, args.batch_size, args.max_vocab,
         args.tokenizer_type, tokenizer=tokenizer)
@@ -192,6 +221,13 @@ def main():
         dropout=args.dropout,
         vanilla_decoder=args.vanilla_decoder,
         share_char_repr=args.share_char_repr).to(device)
+
+    if args.continue_training is not None:
+        logging.info("Load model paramters from file.")
+        state_dict = torch.load(
+            os.path.join(args.continue_training, 'best_bleu.pt'),
+            map_location=device)
+        model.load_state_dict(state_dict)
 
     char_params = model.char_level_param_count
     logging.info(
