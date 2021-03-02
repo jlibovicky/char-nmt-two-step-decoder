@@ -14,7 +14,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from char_tokenizer import from_data
+import char_tokenizer
+import bigram_tokenizer
 from seq_to_seq import Seq2SeqModel
 from lr_scheduler import NoamLR
 from experiment import experiment_logging, get_timestamp
@@ -28,17 +29,24 @@ logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
 
 def preprocess_data(
         train_src, train_tgt, batch_size, max_vocab_size: int,
+        tokenizer_type: str,
         tokenizer=None, max_lines: int = 1000000):
     logging.info("Loading file %s.", train_src.name)
     src_text = [line.strip() for line in train_src]
     logging.info("Loading file %s.", train_tgt.name)
     tgt_text = [line.strip() for line in train_tgt]
 
+    tokenizer_fn = None
+    if tokenizer_type == "char":
+        tokenizer_fn = char_tokenizer.from_data
+    elif tokenizer_type == "bigram":
+        tokenizer_fn = bigram_tokenizer.from_data
+
     if tokenizer is None:
         logging.info("Initializing tokenizer.")
         all_data = src_text + tgt_text
         random.shuffle(all_data)
-        tokenizer = from_data(
+        tokenizer = tokenizer_fn(
             all_data, max_vocab=max_vocab_size, max_lines=max_lines)
 
     batches = []
@@ -126,6 +134,9 @@ def main():
         "test_src", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--max-vocab", type=int, default=300)
+    parser.add_argument(
+        "--tokenizer-type", type=str, default="char",
+        choices=["char", "bigram"])
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--char-emb-dim", type=int, default=64)
     parser.add_argument("--dim", type=int, default=512)
@@ -157,10 +168,11 @@ def main():
 
     logging.info("Load and binarize data.")
     tokenizer, train_batches = preprocess_data(
-        args.train_src, args.train_tgt, args.batch_size, args.max_vocab)
+        args.train_src, args.train_tgt, args.batch_size, args.max_vocab,
+        args.tokenizer_type)
     _, val_batches = preprocess_data(
         args.val_src, args.val_tgt, args.batch_size, args.max_vocab,
-        tokenizer=tokenizer)
+        args.tokenizer_type, tokenizer=tokenizer)
     joblib.dump(tokenizer, os.path.join(experiment_dir, "tokenizer.joblib"))
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

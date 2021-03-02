@@ -88,7 +88,7 @@ class BigramTokenizer(BaseTokenizer):
 
 def from_data(
         text: List[str],
-        max_chars: int = None,
+        max_vocab: int = None,
         max_lines: int = None) -> BigramTokenizer:
     """Create char-level tokenizer from data."""
     unigram_counter = Counter()
@@ -97,18 +97,20 @@ def from_data(
     for i, sent in enumerate(text):
         if max_lines is not None and i >= max_lines:
             break
+        if not sent:
+            continue
         unigram_counter.update(sent)
         bigram_counter.update([f"<s>{sent[0]}", f"{sent[-1]}</s>"])
         bigram_counter.update([
             sent[j] + sent[j + 1] for j in range(len(sent) -1)])
 
-    if max_chars is None:
+    if max_vocab is None:
         vocab_list = list(unigram_counter.keys()) + list(bigram_counter.keys())
     else:
         vocab_list = [
-            tok for tok, _ in unigram_counter.most_common(max_chars)]
+            tok for tok, _ in unigram_counter.most_common(max_vocab)]
         vocab_list += [
-            tok for tok, _ in bigram_counter.most_common(max_chars ** 2)]
+            tok for tok, _ in bigram_counter.most_common(max_vocab ** 2)]
 
     vocab = SPECIAL_SYMBOLS + vocab_list
     return BigramTokenizer(vocab)

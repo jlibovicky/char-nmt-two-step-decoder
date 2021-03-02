@@ -3,6 +3,7 @@
 Implements basics of the Huggingface's tokenizer API.
 """
 
+from abc import ABC, abstractmethod
 from typing import List, Union
 from collections import Counter
 
@@ -13,8 +14,7 @@ import torch
 SPECIAL_SYMBOLS = ["<pad>", "<s>", "</s>", "<unk>"]
 
 
-class CharTokenizer(object):
-    """Char-level tokenizer that roughly floows the Huggingface API."""
+class BaseTokenizer(ABC):
     def __init__(self, tokens: List[str]) -> None:
         super().__init__()
         self.idx_to_str = tokens
@@ -31,35 +31,9 @@ class CharTokenizer(object):
     def vocab_size(self) -> int:
         return len(self.idx_to_str)
 
-    def batch_encode_plus(
-            self,
-            text: Union[str, List[str]],  # the sentence to be encoded
-            add_special_tokens: bool = True,  # Add [CLS] and [SEP]
-            max_length: int = 512,  # maximum length of a sentence
-            truncation: bool = False,
-            pad_to_max_length: bool =True,  # Add [PAD]s
-            return_attention_mask: bool = True,  # Generate the attention mask
-            return_tensors: str = "pt"):
-
-        if isinstance(text, str):
-            text = [text]
-
-        idx_list = []
-        for sent in text:
-            char_list = list(sent)
-            if add_special_tokens:
-                char_list = ["<s>"] + char_list + ["</s>"]
-            if max_length is not None and len(char_list) > max_length:
-                if truncation:
-                    char_list = char_list[:max_length]
-                else:
-                    raise ValueError(
-                        "The sequence is too long and trunkation is disabled.")
-
-            idx = [self.str_to_idx.get(char, 3) for char in char_list]
-
-            idx_list.append(idx)
-
+    def _postprocess_idx_list(
+            self, idx_list: List[List[int]], pad_to_max_length: bool,
+            return_tensors: str, return_attention_mask: bool):
         if pad_to_max_length:
             max_length = max(len(i) for i in idx_list)
             idx_list = [
@@ -90,6 +64,62 @@ class CharTokenizer(object):
             return idx_list, mask
         return idx_list
 
+    @abstractmethod
+    def decode(
+            self,
+            token_ids: Union[int, List[int], np.ndarray, torch.Tensor]) -> str:
+        pass
+
+    def batch_decode(
+            self,
+            token_ids: Union[List[List[int]], np.ndarray, torch.Tensor]) -> List[str]:
+        if isinstance(token_ids, np.ndarray):
+            assert len(token_ids.shape) == 2
+        if isinstance(token_ids, torch.Tensor):
+            assert len(token_ids.shape) == 2
+
+        return [self.decode(sent) for sent in token_ids]
+
+
+class CharTokenizer(BaseTokenizer):
+    """Char-level tokenizer that roughly floows the Huggingface API."""
+    def __init__(self, tokens: List[str]) -> None:
+        super().__init__(tokens)
+
+    def batch_encode_plus(
+            self,
+            text: Union[str, List[str]],  # the sentence to be encoded
+            add_special_tokens: bool = True,  # Add [CLS] and [SEP]
+            max_length: int = 512,  # maximum length of a sentence
+            truncation: bool = False,
+            pad_to_max_length: bool =True,  # Add [PAD]s
+            return_attention_mask: bool = True,  # Generate the attention mask
+            return_tensors: str = "pt"):
+
+        if isinstance(text, str):
+            text = [text]
+
+        idx_list = []
+        for sent in text:
+            char_list = list(sent)
+            if add_special_tokens:
+                char_list = ["<s>"] + char_list + ["</s>"]
+            if max_length is not None and len(char_list) > max_length:
+                if truncation:
+                    char_list = char_list[:max_length]
+                else:
+                    raise ValueError(
+                        "The sequence is too long and trunkation is disabled.")
+
+            idx = [self.str_to_idx.get(
+                char, self.unk_token_id) for char in char_list]
+
+            idx_list.append(idx)
+
+        return self._postprocess_idx_list(
+            idx_list, pad_to_max_length, return_tensors, return_attention_mask)
+
+
     def decode(
             self,
             token_ids: Union[int, List[int], np.ndarray, torch.Tensor]) -> str:
@@ -109,22 +139,13 @@ class CharTokenizer(object):
             chars.append(self.idx_to_str[char_id])
         return "".join(chars)
 
-    def batch_decode(
-            self,
-            token_ids: Union[List[List[int]], np.ndarray, torch.Tensor]) -> List[str]:
-        if isinstance(token_ids, np.ndarray):
-            assert len(token_ids.shape) == 2
-        if isinstance(token_ids, torch.Tensor):
-            assert len(token_ids.shape) == 2
-
-        return [self.decode(sent) for sent in token_ids]
-
 
 def from_data(
         text: List[str],
         max_vocab: int = None,
         max_lines: int = None) -> CharTokenizer:
     """Create char-level tokenizer from data."""
+
     vocab_counter = Counter()
     for i, sent in enumerate(text):
         if max_lines is not None and i >= max_lines:
@@ -132,7 +153,7 @@ def from_data(
         vocab_counter.update(sent)
 
     if max_vocab is None:
-        vocab_list = list(vocab_counter.values())
+        vocab_list = list(vocab_counter.keys())
     else:
         vocab_list = [
             tok for tok, _ in vocab_counter.most_common(max_vocab)]
