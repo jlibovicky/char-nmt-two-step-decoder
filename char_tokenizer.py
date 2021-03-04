@@ -9,6 +9,7 @@ from collections import Counter
 
 import numpy as np
 import torch
+from tqdm import trange
 
 
 SPECIAL_SYMBOLS = ["<pad>", "<s>", "</s>", "<unk>"]
@@ -147,10 +148,13 @@ def from_data(
     """Create char-level tokenizer from data."""
 
     vocab_counter = Counter()
-    for i, sent in enumerate(text):
-        if max_lines is not None and i >= max_lines:
-            break
+    len_limit = len(text)
+    if max_lines is not None:
+        len_limit = min(max_lines, len_limit)
+    pbar = trange(len_limit, unit="sentences")
+    for _, sent in zip(pbar, text):
         vocab_counter.update(sent)
+    pbar.close()
 
     if max_vocab is None:
         vocab_list = list(vocab_counter.keys())

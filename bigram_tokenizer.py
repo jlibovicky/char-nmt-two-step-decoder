@@ -8,6 +8,7 @@ from collections import Counter
 
 import numpy as np
 import torch
+from tqdm import trange
 
 from char_tokenizer import BaseTokenizer, SPECIAL_SYMBOLS
 
@@ -94,15 +95,18 @@ def from_data(
     unigram_counter = Counter()
     bigram_counter = Counter()
 
-    for i, sent in enumerate(text):
-        if max_lines is not None and i >= max_lines:
-            break
+    len_limit = len(text)
+    if max_lines is not None:
+        len_limit = min(max_lines, len_limit)
+    pbar = trange(len_limit, unit="sentences")
+    for _, sent in zip(pbar, text):
         if not sent:
             continue
         unigram_counter.update(sent)
         bigram_counter.update([f"<s>{sent[0]}", f"{sent[-1]}</s>"])
         bigram_counter.update([
             sent[j] + sent[j + 1] for j in range(len(sent) -1)])
+    pbar.close()
 
     if max_vocab is None:
         vocab_list = list(unigram_counter.keys()) + list(bigram_counter.keys())
