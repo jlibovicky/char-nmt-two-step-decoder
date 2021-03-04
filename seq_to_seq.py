@@ -87,6 +87,20 @@ class Seq2SeqModel(nn.Module):
 
         return decoded, mask
 
+    @torch.no_grad()
+    def beam_search(
+            self, src_batch: T, input_mask: T,
+            eos_token_id: int,
+            beam_size: int = 5,
+            len_norm: float = 0.5,
+            max_len: int = 400) -> Tuple[T, T]:
+        encoder_states, encoded_mask = self.encoder(src_batch, input_mask)
+        decoded, mask = self.decoder.beam_search(
+            encoder_states, encoded_mask, eos_token_id,
+            beam_size=beam_size, len_norm=len_norm, max_len=max_len)
+
+        return decoded, mask
+
     @property
     def char_level_param_count(self) -> int:
         """Number of parameters in character processing layers."""

@@ -2,6 +2,7 @@ from typing import List, Tuple
 
 import torch
 from torch import nn
+from torch.functional import F
 from transformers.modeling_bert import BertConfig, BertModel
 
 from lee_encoder import CharToPseudoWord, Encoder
@@ -249,6 +250,125 @@ class Decoder(nn.Module):
                 break
 
         return decoded[:, 1:], None
+
+    @torch.no_grad()
+    def beam_search(
+            self,
+            encoder_states: T,
+            encoder_mask: T,
+            eos_token_id: int,
+            beam_size: int,
+            len_norm: float,
+            max_len: int = 300) -> Tuple[T, T]:
+        device = encoder_states.device
+        batch_size = encoder_states.size(0)
+
+
+        cur_len = 0
+        current_beam = 1
+
+        decoded = torch.ones(
+            (batch_size, 1, 1), dtype=torch.long).to(device)
+        finished = torch.full(
+            (batch_size, 1, 0), False, dtype=torch.bool).to(device)
+        scores = torch.zeros((batch_size, 1)).to(device)
+        rnn_state = None
+
+        flat_decoded = decoded.squeeze(1)
+        flat_finished = finished.squeeze(1)
+        while cur_len < max_len:
+            last_state = self._hidden_states(
+                encoder_states, encoder_mask,
+                flat_decoded[:, 1:],
+                1 - flat_finished.float(),
+                for_training=False)[:, -1:]
+            char_states = self.nar_proj(last_state).reshape(
+                batch_size * current_beam,
+                self.shrink_factor, self.char_embedding_dim)
+
+            for i in range(self.shrink_factor):
+                embeded_prev = self.char_embeddings(flat_decoded[:, -1:])
+                rnn_input = torch.cat(
+                    (embeded_prev, char_states[:, i:i+1]), dim=2)
+                rnn_output, rnn_state = self.char_decoder_rnn(
+                    rnn_input, rnn_state)
+                next_char_logprobs = F.log_softmax(self.output_proj(
+                    torch.cat([rnn_output, char_states[:, i:i+1]], dim=2)),
+                    dim=2)
+
+                # get scores of all expanded hypotheses
+                candidate_scores = (
+                    scores.unsqueeze(2) +
+                    next_char_logprobs.reshape(batch_size, current_beam, -1))
+                norm_factor = torch.pow(
+                    (1 - finished.float()).sum(2, keepdim=True) + 1, len_norm)
+                normed_scores = candidate_scores / norm_factor
+
+                # reshape for beam members and get top k
+                _, best_indices = normed_scores.reshape(
+                    batch_size, -1).topk(beam_size, dim=-1)
+                next_char_ids = best_indices % self.char_vocabulary_size
+                hypothesis_ids = best_indices // self.char_vocabulary_size
+
+                # numbering elements in the extended batch, i.e. beam size
+                # copies of each batch element
+                beam_offset = torch.arange(
+                    0, batch_size * current_beam, step=current_beam,
+                    dtype=torch.long, device=device)
+                global_best_indices = (
+                    beam_offset.unsqueeze(1) + hypothesis_ids).reshape(-1)
+
+                # now select appropriate histories
+                decoded = torch.cat((
+                    flat_decoded.index_select(
+                        0, global_best_indices).reshape(
+                            batch_size, beam_size, -1),
+                    next_char_ids.unsqueeze(-1)), dim=2)
+
+                reordered_finished = flat_finished.index_select(
+                    0, global_best_indices).reshape(batch_size, beam_size, -1)
+                finished_now = (next_char_ids == eos_token_id)
+                if reordered_finished.size(2) > 0:
+                    finished_now += reordered_finished[:, :, -1]
+                finished = torch.cat((
+                    reordered_finished,
+                    finished_now.unsqueeze(-1)), dim=2)
+
+                if finished_now.all():
+                    break
+
+                char_states = char_states.index_select(0, global_best_indices)
+                rnn_state = (
+                    rnn_state[0].index_select(1, global_best_indices),
+                    rnn_state[1].index_select(1, global_best_indices))
+
+                # re-order scores
+                scores = candidate_scores.reshape(
+                    batch_size, -1).gather(-1, best_indices)
+
+                # tile encoder after first step
+                if cur_len == 1:
+                    encoder_states = encoder_states.unsqueeze(1).repeat(
+                        1, beam_size, 1, 1).reshape(
+                            batch_size * beam_size, encoder_states.size(1),
+                            encoder_states.size(2))
+                    encoder_mask = encoder_mask.unsqueeze(1).repeat(
+                        1, beam_size, 1).reshape(batch_size * beam_size, -1)
+
+                # in the first iteration, beam size is 1, in the later ones,
+                # it is the real beam size
+                current_beam = beam_size
+                cur_len += 1
+
+                flat_decoded = decoded.reshape(-1, cur_len + 1)
+                flat_finished = finished.reshape(-1, cur_len)
+
+            if finished_now.all():
+                break
+
+        return (decoded[:, 0], finished[:, 0].logical_not())
+
+
 
 
 class VanillaDecoder(nn.Module):
