@@ -5,6 +5,7 @@ import logging
 import os
 from typing import Iterable
 import random
+import shutil
 import sys
 
 import joblib
@@ -15,6 +16,7 @@ from tensorboardX import SummaryWriter
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tqdm import trange
 
 import char_tokenizer
 import bigram_tokenizer
@@ -29,34 +31,19 @@ T = torch.Tensor
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
 
 
-def preprocess_data(
-        train_src, train_tgt, batch_size, max_vocab_size: int,
-        tokenizer_type: str,
-        tokenizer=None, max_lines: int = 1000000):
-    logging.info("Loading file %s.", train_src.name)
+def preprocess_data(train_src, train_tgt, batch_size: int, tokenizer=None):
+    logging.info("Loading file '%s'.", train_src.name)
     src_text = [line.strip() for line in train_src]
-    logging.info("Loading file %s.", train_tgt.name)
+    logging.info("Loading file '%s'.", train_tgt.name)
     tgt_text = [line.strip() for line in train_tgt]
-
-    tokenizer_fn = None
-    if tokenizer_type == "char":
-        tokenizer_fn = char_tokenizer.from_data
-    elif tokenizer_type == "bigram":
-        tokenizer_fn = bigram_tokenizer.from_data
-
-    if tokenizer is None:
-        logging.info("Initializing tokenizer.")
-        all_data = src_text + tgt_text
-        random.shuffle(all_data)
-        tokenizer = tokenizer_fn(
-            all_data, max_vocab=max_vocab_size, max_lines=max_lines)
 
     batches = []
     src_batch, tgt_batch = [], []
     total_sentences = 0
     skipped = 0
     logging.info("Binarizing and batching data.")
-    for src, tgt in zip(src_text, tgt_text):
+    pbar = trange(len(src_text), unit="sentences")
+    for _, src, tgt in zip(pbar, src_text, tgt_text):
         total_sentences += 1
         if len(src) > 300 or len(tgt) > 300:
             skipped += 1
@@ -77,7 +64,7 @@ def preprocess_data(
     logging.info(
         "Skipped %d sentences from %d in the dataset.",
         skipped, total_sentences)
-    return tokenizer, batches
+    return batches
 
 
 def cpu_save_state_dict(model, experiment_dir, name):
@@ -243,20 +230,20 @@ def main():
         tokenizer = joblib.load(
             os.path.join(args.continue_training, "tokenizer.joblib"))
     else:
-        tokenizer = None
+        logging.info("Loading tokenizer from '%s'.", args.tokenizer)
+        tokenizer = joblib.load(args.tokenizer)
 
     experiment_dir = experiment_logging(
         "experiments", f"{args.name}_{get_timestamp()}", args)
+    shutil.copyfile(
+        args.tokenizer, os.path.join(experiment_dir, "tokenizer.joblib"))
     tb_writer = SummaryWriter(experiment_dir)
 
     logging.info("Load and binarize data.")
-    tokenizer, train_batches = preprocess_data(
-        args.train_src, args.train_tgt, args.batch_size, args.max_vocab,
-        args.tokenizer_type, tokenizer=tokenizer)
-    _, val_batches = preprocess_data(
-        args.val_src, args.val_tgt, args.batch_size, args.max_vocab,
-        args.tokenizer_type, tokenizer=tokenizer)
-    joblib.dump(tokenizer, os.path.join(experiment_dir, "tokenizer.joblib"))
+    train_batches = preprocess_data(
+        args.train_src, args.train_tgt, args.batch_size, tokenizer=tokenizer)
+    val_batches = preprocess_data(
+        args.val_src, args.val_tgt, args.batch_size, tokenizer=tokenizer)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info("Initializing model on device %s.", device)

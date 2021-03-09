@@ -28,6 +28,9 @@ class BPETokenizer(BaseTokenizer):
             return_attention_mask: bool = True,  # Generate the attention mask
             return_tensors: str = "pt"):
 
+        if isinstance(text, str):
+            text = [text]
+
         idx_list = []
         for sent in self.tokenizer.encode_batch(text):
             ids = sent.ids
