@@ -185,7 +185,7 @@ class Encoder(nn.Module):
         self.transformer = BertModel(config)
     # pylint: enable=too-many-arguments
 
-    def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T]:
+    def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T, T]:
         encoded, enc_mask = self.char_encoder(
             self.embeddings(data),# + self.pre_pos_emb[:, :data.size(1)],
             mask)
@@ -196,3 +196,44 @@ class Encoder(nn.Module):
             attention_mask=enc_mask)
 
         return transformed, enc_mask, attentions
+
+
+class VanillaEncoder(nn.Module):
+    def __init__(
+            self,
+            char_vocabulary_size: int,
+            dim: int,
+            layers: int = 6,
+            ff_dim: int = None,
+            attention_heads: int = 8,
+            dropout: float = 0.1) -> None:
+        super().__init__()
+
+        self.dim = dim
+        self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
+        self.layers = layers
+        self.char_vocabulary_size = char_vocabulary_size
+
+        config = BertConfig(
+            vocab_size=dim,
+            is_decoder=False,
+            add_cross_attention=False,
+            hidden_size=dim,
+            num_hidden_layers=layers,
+            num_attention_heads=attention_heads,
+            intermediate_size=self.ff_dim,
+            hidden_act="relu",
+            hidden_dropout_prob=dropout,
+            attention_probs_dropout_prob=dropout,
+            output_attentions=True)
+        self.transformer = BertModel(config)
+
+    @property
+    def embeddings(self) -> nn.Module:
+        return self.transformer.embeddings.word_embeddings
+
+    def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T, T]:
+        transformed, _, attentions = self.transformer(
+            input_ids=data,
+            attention_mask=mask)
+        return transformed, mask, attentions

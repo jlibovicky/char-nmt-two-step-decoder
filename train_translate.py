@@ -3,7 +3,7 @@
 import argparse
 import logging
 import os
-from typing import Iterable
+from typing import IO, List
 import random
 import shutil
 import sys
@@ -18,11 +18,9 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import trange
 
-import char_tokenizer
-import bigram_tokenizer
+from experiment import experiment_logging, get_timestamp
 from seq_to_seq import Seq2SeqModel
 from lr_scheduler import NoamLR
-from experiment import experiment_logging, get_timestamp
 
 
 T = torch.Tensor
@@ -31,7 +29,9 @@ T = torch.Tensor
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
 
 
-def preprocess_data(train_src, train_tgt, batch_size: int, tokenizer=None):
+def preprocess_data(
+        train_src: IO[str], train_tgt: IO[str],
+        batch_size: int, tokenizer=None) -> List[T]:
     logging.info("Loading file '%s'.", train_src.name)
     src_text = [line.strip() for line in train_src]
     logging.info("Loading file '%s'.", train_tgt.name)
@@ -67,7 +67,8 @@ def preprocess_data(train_src, train_tgt, batch_size: int, tokenizer=None):
     return batches
 
 
-def cpu_save_state_dict(model, experiment_dir, name):
+def cpu_save_state_dict(
+        model: nn.Module, experiment_dir: str, name: str) -> None:
     state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
     torch.save(state_dict, os.path.join(experiment_dir, name))
 
@@ -198,6 +199,8 @@ def main():
         "--convolutions", nargs="+",
         default=[128, 256, 512, 512, 512], type=int)
     parser.add_argument(
+        "--vanilla-encoder", action="store_true", default=False)
+    parser.add_argument(
         "--vanilla-decoder", action="store_true", default=False)
     parser.add_argument(
         "--share-char-repr", action="store_true", default=False)
@@ -223,6 +226,7 @@ def main():
         args.dropout = previous_args["dropout"]
         args.highway_layers = previous_args["highway_layers"]
         args.char_ff_layers = previous_args["char_ff_layers"]
+        args.vanilla_encoder = previous_args["vanilla_encoder"]
         args.vanilla_decoder = previous_args["vanilla_decoder"]
         args.share_char_repr = previous_args["share_char_repr"]
 
@@ -260,6 +264,7 @@ def main():
         layers=args.layers,
         attention_heads=args.attention_heads,
         dropout=args.dropout,
+        vanilla_encoder=args.vanilla_encoder,
         vanilla_decoder=args.vanilla_decoder,
         share_char_repr=args.share_char_repr).to(device)
 

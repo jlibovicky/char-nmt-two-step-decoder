@@ -5,7 +5,7 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 
-from encoder import Encoder
+from encoder import Encoder, VanillaEncoder
 from decoder import Decoder, VanillaDecoder
 
 
@@ -44,24 +44,34 @@ class Seq2SeqModel(nn.Module):
             layers: int = 6,
             attention_heads: int = 8,
             dropout: float = 0.1,
+            vanilla_encoder: bool = False,
             vanilla_decoder: bool = False,
             share_char_repr: bool = False) -> None:
         super().__init__()
 
         self.layers = layers
 
-        self.encoder = Encoder(
-            vocab_size=vocab_size,
-            char_embedding_dim=char_embedding_dim,
-            conv_filters=conv_filters,
-            dim=dim,
-            shrink_factor=shrink_factor,
-            highway_layers=highway_layers,
-            char_ff_layers=char_ff_layers,
-            ff_dim=ff_dim, layers=layers,
-            attention_heads=attention_heads,
-            dropout=dropout,
-            decoder_style_padding=share_char_repr)
+        if vanilla_encoder:
+            self.encoder = VanillaEncoder(
+                char_vocabulary_size=vocab_size,
+                dim=dim,
+                layers=layers,
+                ff_dim=ff_dim,
+                attention_heads=attention_heads,
+                dropout=dropout)
+        else:
+            self.encoder = Encoder(
+                vocab_size=vocab_size,
+                char_embedding_dim=char_embedding_dim,
+                conv_filters=conv_filters,
+                dim=dim,
+                shrink_factor=shrink_factor,
+                highway_layers=highway_layers,
+                char_ff_layers=char_ff_layers,
+                ff_dim=ff_dim, layers=layers,
+                attention_heads=attention_heads,
+                dropout=dropout,
+                decoder_style_padding=share_char_repr)
 
         if vanilla_decoder:
             self.decoder = VanillaDecoder(
@@ -138,7 +148,10 @@ class Seq2SeqModel(nn.Module):
     def char_level_param_count(self) -> int:
         """Number of parameters in character processing layers."""
 
-        relevant_parts = [self.encoder.embeddings, self.encoder.char_encoder]
+        relevant_parts = [self.encoder.embeddings]
+
+        if isinstance(self.encoder, Encoder):
+            relevant_parts.append(self.encoder.char_encoder)
 
         if isinstance(self.decoder, VanillaDecoder):
             relevant_parts.append(self.decoder.transformer.embeddings)
