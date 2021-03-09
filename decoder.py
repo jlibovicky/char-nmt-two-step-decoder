@@ -5,7 +5,7 @@ from torch import nn
 from torch.functional import F
 from transformers.modeling_bert import BertConfig, BertModel
 
-from lee_encoder import CharToPseudoWord, Encoder
+from encoder import CharToPseudoWord, Encoder
 
 T = torch.Tensor
 

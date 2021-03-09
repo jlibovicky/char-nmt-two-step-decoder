@@ -14,7 +14,7 @@ import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 from transformers.modeling_bert import BertConfig, BertEncoder
 
-from lee_encoder import CharToPseudoWord
+from encoder import CharToPseudoWord
 from char_modeling import CharDecode, encode_str, decode_str
 from lr_scheduler import NoamLR
 

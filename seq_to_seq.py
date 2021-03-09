@@ -5,7 +5,7 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 
-from lee_encoder import Encoder
+from encoder import Encoder
 from decoder import Decoder, VanillaDecoder
 
 

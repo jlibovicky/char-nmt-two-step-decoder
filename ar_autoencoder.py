@@ -15,7 +15,7 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers.modeling_bert import BertConfig, BertEncoder
 
 from char_modeling import encode_str
-from lee_encoder import Encoder
+from encoder import Encoder
 from decoder import Decoder, VanillaDecoder
 from lr_scheduler import NoamLR
 
