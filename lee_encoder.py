@@ -180,7 +180,8 @@ class Encoder(nn.Module):
             intermediate_size=self.ff_dim,
             hidden_act="relu",
             hidden_dropout_prob=dropout,
-            attention_probs_dropout_prob=dropout)
+            attention_probs_dropout_prob=dropout,
+            output_attentions=True)
         self.transformer = BertModel(config)
     # pylint: enable=too-many-arguments
 
@@ -189,9 +190,9 @@ class Encoder(nn.Module):
             self.embeddings(data),# + self.pre_pos_emb[:, :data.size(1)],
             mask)
 
-        transformed = self.transformer(
+        transformed, _, attentions = self.transformer(
             input_ids=None,
             inputs_embeds=encoded,
-            attention_mask=enc_mask)[0]
+            attention_mask=enc_mask)
 
-        return transformed, enc_mask
+        return transformed, enc_mask, attentions

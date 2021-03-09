@@ -66,7 +66,8 @@ class Decoder(nn.Module):
             intermediate_size=self.ff_dim,
             hidden_act="relu",
             hidden_dropout_prob=dropout,
-            attention_probs_dropout_prob=dropout)
+            attention_probs_dropout_prob=dropout,
+            output_attentions=True)
         self.transformer = BertModel(config)
 
         #self.nar_proj = nn.Sequential(
@@ -94,6 +95,10 @@ class Decoder(nn.Module):
         #    nn.Linear(char_embedding_dim, char_vocabulary_size))
     # pylint: enable=too-many-arguments
 
+    @property
+    def embeddings(self) -> nn.Module:
+        return self.char_embeddings[0]
+
     def _hidden_states(
             self,
             encoder_states: T,
@@ -104,7 +109,6 @@ class Decoder(nn.Module):
         """Hidden states are used as input to the decoding LSTMs."""
         batch_size = target_ids.size(0)
         to_prepend = torch.ones(
-            #(batch_size, self.shrink_factor),
             (batch_size, self.shrink_factor),
             dtype=torch.int64).to(target_ids.device)
 
@@ -119,14 +123,14 @@ class Decoder(nn.Module):
                 self.pre_pos_emb[:, :dec_input.size(1)]),
             input_mask)
 
-        decoder_states = self.transformer(
+        decoder_states, _, self_att, encdec_att = self.transformer(
             input_ids=None,
             inputs_embeds=decoder_embeddings,
             attention_mask=shrinked_mask,
             encoder_hidden_states=encoder_states,
-            encoder_attention_mask=encoder_mask)[0]
+            encoder_attention_mask=encoder_mask)
 
-        return decoder_states
+        return decoder_states, shrinked_mask, self_att, encdec_att
 
     def forward(
             self,
@@ -134,10 +138,15 @@ class Decoder(nn.Module):
             encoder_mask: T,
             target_ids: T,
             target_mask: T,
-            loss_function: nn.Module) -> T:
+            loss_function: nn.Module,
+            log_details: bool = False) -> T:
+
+        details = None
+        if log_details:
+            details = {}
 
         batch_size = encoder_states.size(0)
-        decoder_states = self._hidden_states(
+        decoder_states, shrinked_mask, self_att, encdec_att = self._hidden_states(
             encoder_states, encoder_mask, target_ids, target_mask,
             for_training=True)
 
@@ -166,6 +175,7 @@ class Decoder(nn.Module):
         loss_sum = 0
         mask_sum = 0
         rnn_state = None
+        entropy_sum = 0.
         for i in range(decoder_states.size(1)):
             # cut off the correct target side window
             decode_start = i * self.shrink_factor
@@ -190,7 +200,20 @@ class Decoder(nn.Module):
                 step_output_ids.reshape(-1))
             loss_sum += (step_loss * step_mask.reshape(-1)).sum()
             mask_sum += step_mask.sum()
-        return loss_sum / mask_sum
+
+            if log_details:
+                step_entropies = -(
+                    F.log_softmax(this_step_logits, dim=1) *
+                    F.softmax(this_step_logits, dim=-1)).sum(2)
+                entropy_sum += (step_entropies * step_mask).sum()
+
+        if log_details:
+            details["output_entropy"] = entropy_sum / mask_sum
+            details["decoder_self_attention"] = self_att
+            details["ecnoder_decoder_attention"] = encdec_att
+            details["decoder_mask"] = shrinked_mask
+
+        return loss_sum / mask_sum, details
 
     @torch.no_grad()
     def greedy_decode(
@@ -215,11 +238,12 @@ class Decoder(nn.Module):
 
         rnn_state = None
         for _ in range(max_len // step_size + 1):
-            last_state = self._hidden_states(
+            states, _, _, _ = self._hidden_states(
                 encoder_states, encoder_mask,
                 decoded,
                 torch.ones_like(decoded, dtype=torch.float),
-                for_training=False)[:, -1:]
+                for_training=False)
+            last_state = states[:, -1:]
             char_states = self.nar_proj(last_state).reshape(
                 batch_size, -1, self.char_embedding_dim)
 
@@ -237,7 +261,8 @@ class Decoder(nn.Module):
                     rnn_output, rnn_state = self.char_decoder_rnn(
                         rnn_input, rnn_state)
                     next_chars = self.output_proj(
-                        torch.cat([rnn_output, char_states[:, i:i+1]], dim=2)).argmax(2)
+                        torch.cat(
+                            [rnn_output, char_states[:, i:i+1]], dim=2)).argmax(2)
                     new_chars.append(next_chars)
                     finished = finished + (next_chars == eos_token_id)
 
@@ -263,7 +288,6 @@ class Decoder(nn.Module):
         device = encoder_states.device
         batch_size = encoder_states.size(0)
 
-
         cur_len = 0
         current_beam = 1
 
@@ -277,11 +301,12 @@ class Decoder(nn.Module):
         flat_decoded = decoded.squeeze(1)
         flat_finished = finished.squeeze(1)
         while cur_len < max_len:
-            last_state = self._hidden_states(
+            states, _, _, _ = self._hidden_states(
                 encoder_states, encoder_mask,
                 flat_decoded[:, 1:],
                 1 - flat_finished.float(),
-                for_training=False)[:, -1:]
+                for_training=False)
+            last_state = states[:, -1:]
             char_states = self.nar_proj(last_state).reshape(
                 batch_size * current_beam,
                 self.shrink_factor, self.char_embedding_dim)
@@ -397,11 +422,15 @@ class VanillaDecoder(nn.Module):
             intermediate_size=self.ff_dim,
             hidden_act="relu",
             hidden_dropout_prob=dropout,
-            attention_probs_dropout_prob=dropout)
+            attention_probs_dropout_prob=dropout,
+            output_attentions=True)
         self.transformer = BertModel(config)
 
         self.output_proj = nn.Linear(dim, char_vocabulary_size)
 
+    @property
+    def embeddings(self) -> nn.Module:
+        return self.transformer.embeddings.word_embeddings
 
     def _hidden_states(
             self,
@@ -421,13 +450,13 @@ class VanillaDecoder(nn.Module):
         dec_input = torch.cat([to_prepend, target_ids], dim=1)
         input_mask = torch.cat([to_prepend, target_mask], dim=1)
 
-        decoder_states = self.transformer(
+        decoder_states, _, self_att, encdec_att = self.transformer(
             dec_input,
             attention_mask=input_mask,
             encoder_hidden_states=encoder_states,
-            encoder_attention_mask=encoder_mask)[0]
+            encoder_attention_mask=encoder_mask)
 
-        return decoder_states
+        return decoder_states, self_att, encdec_att
 
     def forward(
             self,
@@ -435,9 +464,10 @@ class VanillaDecoder(nn.Module):
             encoder_mask: T,
             target_ids: T,
             target_mask: T,
-            loss_function: nn.Module) -> T:
+            loss_function: nn.Module,
+            log_details: bool = False) -> T:
 
-        decoder_states = self._hidden_states(
+        decoder_states, self_att, encdec_att = self._hidden_states(
             encoder_states, encoder_mask, target_ids, target_mask,
             for_training=True)
 
@@ -447,8 +477,20 @@ class VanillaDecoder(nn.Module):
             decoder_logits.reshape(-1, self.char_vocabulary_size),
             target_ids.reshape(-1))
 
+        details = None
+        if log_details:
+            details = {}
+            entropies = -(
+                F.log_softmax(decoder_logits, dim=-1) *
+                F.softmax(decoder_logits, dim=-1)).sum(2) * target_mask
+            details["decoder_mask"] = target_mask
+            details["output_entropy"] = (entropies).sum() / target_mask.sum()
+            details["decoder_self_attention"] = self_att
+            details["ecnode_decoder_attention"] = encdec_att
+
         return (
-            loss_per_char * target_mask.reshape(-1)).sum() / target_mask.sum()
+            (loss_per_char * target_mask.reshape(-1)).sum() / target_mask.sum(),
+            details)
 
     @torch.no_grad()
     def greedy_decode(
@@ -468,11 +510,12 @@ class VanillaDecoder(nn.Module):
         # pylint: enable=not-callable
 
         for _ in range(max_len):
-            last_state = self._hidden_states(
+            states, _, _ = self._hidden_states(
                 encoder_states, encoder_mask,
                 decoded,
                 torch.ones_like(decoded, dtype=torch.float),
-                for_training=False)[:, -1]
+                for_training=False)
+            last_state = states[:, -1]
 
             new_char = self.output_proj(last_state).argmax(1, keepdim=True)
             finished = finished + (new_char == eos_token_id)
