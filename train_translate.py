@@ -3,7 +3,7 @@
 import argparse
 import logging
 import os
-from typing import IO, List
+from typing import IO, List, Tuple
 import random
 import shutil
 import sys
@@ -31,7 +31,7 @@ logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
 
 def preprocess_data(
         train_src: IO[str], train_tgt: IO[str],
-        batch_size: int, tokenizer=None) -> List[T]:
+        batch_size: int, tokenizer=None) -> List[Tuple[T, T]]:
     logging.info("Loading file '%s'.", train_src.name)
     src_text = [line.strip() for line in train_src]
     logging.info("Loading file '%s'.", train_tgt.name)
@@ -68,13 +68,14 @@ def preprocess_data(
 
 
 def cpu_save_state_dict(
-        model: nn.Module, experiment_dir: str, name: str) -> None:
+        model: Seq2SeqModel, experiment_dir: str, name: str) -> None:
     state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
     torch.save(state_dict, os.path.join(experiment_dir, name))
 
 
 @torch.no_grad()
-def validate(model, batches, loss_function, device, tokenizer, tb_writer,
+def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
+             loss_function, device, tokenizer, tb_writer,
              steps: int, log_details: bool):
     model.eval()
     loss_sum = 0

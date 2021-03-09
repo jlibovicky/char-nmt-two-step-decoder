@@ -3,6 +3,7 @@
 Implements basics of the Huggingface's tokenizer API.
 """
 
+import typing
 from typing import List, Union
 from collections import Counter
 
@@ -10,7 +11,7 @@ import numpy as np
 import torch
 from tqdm import trange
 
-from char_tokenizer import BaseTokenizer, SPECIAL_SYMBOLS
+from char_tokenizer import BaseTokenizer, SPECIAL_SYMBOLS, postprocess_idx_list
 
 
 class BigramTokenizer(BaseTokenizer):
@@ -59,7 +60,7 @@ class BigramTokenizer(BaseTokenizer):
 
             idx_list.append(token_list)
 
-        return self._postprocess_idx_list(
+        return postprocess_idx_list(
             idx_list, pad_to_max_length, return_tensors, return_attention_mask)
 
     def decode(
@@ -92,8 +93,8 @@ def from_data(
         max_vocab: int = None,
         max_lines: int = None) -> BigramTokenizer:
     """Create char-level tokenizer from data."""
-    unigram_counter = Counter()
-    bigram_counter = Counter()
+    unigram_counter: typing.Counter[str] = Counter()
+    bigram_counter: typing.Counter[str] = Counter()
 
     len_limit = len(text)
     if max_lines is not None:

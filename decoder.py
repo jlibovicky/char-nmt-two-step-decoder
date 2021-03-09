@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import nn
@@ -39,7 +39,7 @@ class Decoder(nn.Module):
         self.char_embedding_dim = char_embedding_dim
 
         if encoder is not None:
-            self.char_embeddings = encoder.embeddings
+            self.char_embeddings: nn.Module = encoder.embeddings
             self.pre_pos_emb = encoder.pre_pos_emb
             self.char_encoder = encoder.char_encoder
         else:
@@ -97,7 +97,9 @@ class Decoder(nn.Module):
 
     @property
     def embeddings(self) -> nn.Module:
-        return self.char_embeddings[0]
+        if isinstance(self.char_embedding, nn.Sequential):
+            return self.char_embeddings[0] # type: ignore
+        return self.char_embeddings
 
     def _hidden_states(
             self,
@@ -105,7 +107,7 @@ class Decoder(nn.Module):
             encoder_mask: T,
             target_ids: T,
             target_mask: T,
-            for_training: bool) -> T:
+            for_training: bool) -> Tuple[T, T, T, T]:
         """Hidden states are used as input to the decoding LSTMs."""
         batch_size = target_ids.size(0)
         to_prepend = torch.ones(
@@ -139,9 +141,9 @@ class Decoder(nn.Module):
             target_ids: T,
             target_mask: T,
             loss_function: nn.Module,
-            log_details: bool = False) -> T:
+            log_details: bool = False) -> Tuple[T, Optional[Dict[str, Any]]]:
 
-        details = None
+        details: Optional[Dict[str, Any]] = None
         if log_details:
             details = {}
 
@@ -175,7 +177,7 @@ class Decoder(nn.Module):
         loss_sum = 0
         mask_sum = 0
         rnn_state = None
-        entropy_sum = 0.
+        entropy_sum = 0. # type: ignore
         for i in range(decoder_states.size(1)):
             # cut off the correct target side window
             decode_start = i * self.shrink_factor
@@ -207,7 +209,7 @@ class Decoder(nn.Module):
                     F.softmax(this_step_logits, dim=-1)).sum(2)
                 entropy_sum += (step_entropies * step_mask).sum()
 
-        if log_details:
+        if details is not None:
             details["output_entropy"] = entropy_sum / mask_sum
             details["decoder_self_attention"] = self_att
             details["ecnoder_decoder_attention"] = encdec_att
@@ -394,8 +396,6 @@ class Decoder(nn.Module):
         return (decoded[:, 0], finished[:, 0].logical_not())
 
 
-
-
 class VanillaDecoder(nn.Module):
     def __init__(
             self,
@@ -438,7 +438,7 @@ class VanillaDecoder(nn.Module):
             encoder_mask: T,
             target_ids: T,
             target_mask: T,
-            for_training: bool) -> T:
+            for_training: bool) -> Tuple[T, T, T]:
         batch_size = target_ids.size(0)
         to_prepend = torch.ones(
             (batch_size, 1),
@@ -465,7 +465,7 @@ class VanillaDecoder(nn.Module):
             target_ids: T,
             target_mask: T,
             loss_function: nn.Module,
-            log_details: bool = False) -> T:
+            log_details: bool = False) -> Tuple[T, Optional[Dict[str, Any]]]:
 
         decoder_states, self_att, encdec_att = self._hidden_states(
             encoder_states, encoder_mask, target_ids, target_mask,

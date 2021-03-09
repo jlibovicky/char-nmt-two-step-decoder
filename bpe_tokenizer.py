@@ -1,7 +1,6 @@
 
 import re
 from typing import List, Union
-from collections import Counter
 
 import numpy as np
 from tokenizers import Tokenizer
@@ -10,7 +9,7 @@ from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 import torch
 
-from char_tokenizer import BaseTokenizer, SPECIAL_SYMBOLS
+from char_tokenizer import BaseTokenizer, SPECIAL_SYMBOLS, postprocess_idx_list
 
 
 class BPETokenizer(BaseTokenizer):
@@ -45,7 +44,7 @@ class BPETokenizer(BaseTokenizer):
                         "The sequence is too long and trunkation is disabled.")
             idx_list.append(ids)
 
-        return self._postprocess_idx_list(
+        return postprocess_idx_list(
             idx_list, pad_to_max_length, return_tensors, return_attention_mask)
 
     def decode(

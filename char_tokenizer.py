@@ -4,6 +4,7 @@ Implements basics of the Huggingface's tokenizer API.
 """
 
 from abc import ABC, abstractmethod
+import typing
 from typing import List, Union
 from collections import Counter
 
@@ -13,6 +14,11 @@ from tqdm import trange
 
 
 SPECIAL_SYMBOLS = ["<pad>", "<s>", "</s>", "<unk>"]
+
+
+BATCH = Union[
+    List[List[int]], np.array, torch.Tensor,
+    List[np.array], List[torch.Tensor]]
 
 
 class BaseTokenizer(ABC):
@@ -28,42 +34,22 @@ class BaseTokenizer(ABC):
 
         assert tokens[:4] == SPECIAL_SYMBOLS
 
+    @abstractmethod
+    def batch_encode_plus(
+            self,
+            text: Union[str, List[str]],  # the sentence to be encoded
+            add_special_tokens: bool = True,  # Add [CLS] and [SEP]
+            max_length: int = 512,  # maximum length of a sentence
+            truncation: bool = False,
+            pad_to_max_length: bool =True,  # Add [PAD]s
+            return_attention_mask: bool = True,  # Generate the attention mask
+            return_tensors: str = "pt") -> BATCH:
+        pass
+
     @property
     def vocab_size(self) -> int:
         return len(self.idx_to_str)
 
-    def _postprocess_idx_list(
-            self, idx_list: List[List[int]], pad_to_max_length: bool,
-            return_tensors: str, return_attention_mask: bool):
-        if pad_to_max_length:
-            max_length = max(len(i) for i in idx_list)
-            idx_list = [
-                idx + [0] * (max_length - len(idx)) for idx in idx_list]
-
-        if return_tensors == "pt":
-            # pylint: disable=not-callable
-            if pad_to_max_length:
-                idx_list = torch.tensor(idx_list)
-            else:
-                idx_list = [torch.tensor(idx) for idx in idx_list]
-            # pylint: enable=not-callable
-        elif return_tensors == "np":
-            if pad_to_max_length:
-                idx_list = np.array(idx_list)
-            else:
-                idx_list = [np.array(id) for idx in idx_list]
-        else:
-            raise ValueError(f"Unsupported tensor type: {return_tensors}.")
-
-        if return_attention_mask:
-            if not pad_to_max_length:
-                raise ValueError(
-                    "Masking does not make sense without padding.")
-            mask = idx_list != 0
-            if return_tensors == "pt":
-                mask = mask.float()
-            return idx_list, mask
-        return idx_list
 
     @abstractmethod
     def decode(
@@ -80,6 +66,42 @@ class BaseTokenizer(ABC):
             assert len(token_ids.shape) == 2
 
         return [self.decode(sent) for sent in token_ids]
+
+
+def postprocess_idx_list(
+        int_idx_list: List[List[int]], pad_to_max_length: bool,
+        return_tensors: str, return_attention_mask: bool) -> BATCH:
+    if pad_to_max_length:
+        max_length = max(len(i) for i in int_idx_list)
+        idx_list: BATCH = [
+            idx + [0] * (max_length - len(idx)) for idx in int_idx_list]
+    else:
+        idx_list = int_idx_list
+
+    if return_tensors == "pt":
+        # pylint: disable=not-callable
+        if pad_to_max_length:
+            idx_list = torch.tensor(idx_list)
+        else:
+            idx_list = [torch.tensor(idx) for idx in idx_list]
+        # pylint: enable=not-callable
+    elif return_tensors == "np":
+        if pad_to_max_length:
+            idx_list = np.array(idx_list)
+        else:
+            idx_list = [np.array(id) for idx in idx_list]
+    else:
+        raise ValueError(f"Unsupported tensor type: {return_tensors}.")
+
+    if return_attention_mask:
+        if not pad_to_max_length:
+            raise ValueError(
+                "Masking does not make sense without padding.")
+        mask = idx_list != 0 # type: ignore
+        if return_tensors == "pt":
+            mask = mask.float() # type: ignore
+        return idx_list, mask
+    return idx_list
 
 
 class CharTokenizer(BaseTokenizer):
@@ -117,7 +139,7 @@ class CharTokenizer(BaseTokenizer):
 
             idx_list.append(idx)
 
-        return self._postprocess_idx_list(
+        return postprocess_idx_list(
             idx_list, pad_to_max_length, return_tensors, return_attention_mask)
 
 
@@ -147,7 +169,7 @@ def from_data(
         max_lines: int = None) -> CharTokenizer:
     """Create char-level tokenizer from data."""
 
-    vocab_counter = Counter()
+    vocab_counter: typing.Counter[str] = Counter()
     len_limit = len(text)
     if max_lines is not None:
         len_limit = min(max_lines, len_limit)

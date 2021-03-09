@@ -20,7 +20,7 @@ class Highway(nn.Module):
         self.proj = nn.Conv1d(input_size, input_size, kernel_size=1, stride=1)
         self.transform = nn.Conv1d(
             input_size, input_size, kernel_size=1, stride=1)
-        self.transform.bias.data.fill_(-2.0)
+        self.transform.bias.data.fill_(-2.0) # type: ignore
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: T) -> T:
