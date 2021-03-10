@@ -80,7 +80,9 @@ class Seq2SeqModel(nn.Module):
                 layers=layers,
                 ff_dim=ff_dim,
                 attention_heads=attention_heads,
-                dropout=dropout)
+                dropout=dropout,
+                encoder=self.encoder if (
+                    share_char_repr and vanilla_encoder) else None)
         else:
             self.decoder = Decoder(
                 char_vocabulary_size=vocab_size,

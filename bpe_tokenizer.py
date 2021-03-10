@@ -17,6 +17,10 @@ class BPETokenizer(BaseTokenizer):
         super().__init__(SPECIAL_SYMBOLS)
         self.tokenizer = tokenizer
 
+    @property
+    def vocab_size(self) -> int:
+        return self.tokenizer.get_vocab_size()
+
     def batch_encode_plus(
             self,
             text: Union[str, List[str]],  # the sentence to be encoded
@@ -56,12 +60,16 @@ class BPETokenizer(BaseTokenizer):
             assert len(token_ids.shape) == 1
         if isinstance(token_ids, torch.Tensor):
             assert len(token_ids.shape) == 1
-            token_ids = token_ids.numpy()
+            token_ids = token_ids.cpu().numpy()
 
-        decoded = self.tokenizer.decode(token_ids)
+        decoded = self.tokenizer.decode(token_ids, skip_special_tokens=False)
+        decoded = re.sub("^<s> ", "", decoded)
+        decoded = re.sub(" </s>.*", "", decoded)
         decoded = re.sub(" ", "", decoded)
         decoded = re.sub("▁", " ", decoded)
 
+        if decoded.startswith(" "):
+            return decoded[1:]
         return decoded
 
 

@@ -215,7 +215,7 @@ class VanillaEncoder(nn.Module):
         self.char_vocabulary_size = char_vocabulary_size
 
         config = BertConfig(
-            vocab_size=dim,
+            vocab_size=char_vocabulary_size,
             is_decoder=False,
             add_cross_attention=False,
             hidden_size=dim,

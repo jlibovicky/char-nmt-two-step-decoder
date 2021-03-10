@@ -76,7 +76,7 @@ def cpu_save_state_dict(
 @torch.no_grad()
 def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
              loss_function, device, tokenizer, tb_writer,
-             steps: int, log_details: bool):
+             updates: int, log_details: bool):
     model.eval()
     loss_sum = 0
     source_sentences = []
@@ -110,16 +110,16 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
         source_sentences, target_sentences, decoded_sentences)
     val_loss = loss_sum / len(batches)
 
-    tb_writer.add_scalar("loss/val", val_loss, global_step=steps)
-    tb_writer.add_scalar("bleu/val", bleu.score, global_step=steps)
-    tb_writer.add_scalar("chrf/val", chrf.score, global_step=steps)
+    tb_writer.add_scalar("loss/val", val_loss, global_step=updates)
+    tb_writer.add_scalar("bleu/val", bleu.score, global_step=updates)
+    tb_writer.add_scalar("chrf/val", chrf.score, global_step=updates)
 
     for i, (src, ref, hyp) in enumerate(val_samples):
         tb_writer.add_text(
             f"{i + 1}",
             f"`src:` {src}  \n"
             f"`ref:` {ref}  \n"
-            f"`hyp:` {hyp}", steps)
+            f"`hyp:` {hyp}", updates)
         if i >= 9:
             break
 
@@ -127,16 +127,16 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
         output_entropy = np.mean([
             d["output_entropy"].cpu() for d in details_list])
         tb_writer.add_scalar(
-            "details/output_entropy", output_entropy, global_step=steps)
+            "details/output_entropy", output_entropy, global_step=updates)
         tb_writer.add_embedding(
             model.encoder.embeddings.weight,
             metadata=tokenizer.idx_to_str,
-            global_step=steps,
+            global_step=updates,
             tag='Encoder embeddings')
         tb_writer.add_embedding(
             model.decoder.embeddings.weight[:len(tokenizer.idx_to_str)],
             metadata=tokenizer.idx_to_str,
-            global_step=steps,
+            global_step=updates,
             tag='Decoder embeddings')
         encoder_self_att_entropies = [
             np.mean([d["enc_attention_entropies"][i].cpu()
@@ -153,15 +153,15 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
         for i, ent in enumerate(encoder_self_att_entropies):
             tb_writer.add_scalar(
                 f"details/encoder_self_att_entropy_layer{i + 1}",
-                ent, global_step=steps)
+                ent, global_step=updates)
         for i, ent in enumerate(decoder_self_att_entropies):
             tb_writer.add_scalar(
                 f"details/decoder_self_att_entropy_layer{i + 1}",
-                ent, global_step=steps)
+                ent, global_step=updates)
         for i, ent in enumerate(encdec_att_entropies):
             tb_writer.add_scalar(
                 f"details/encoder_decoder_att_entropy_layer{i + 1}",
-                ent, global_step=steps)
+                ent, global_step=updates)
 
     return val_loss, bleu.score, chrf.score, val_samples
 
@@ -288,9 +288,10 @@ def main():
 
     logging.info("Training starts.")
     steps = 0
+    updates = 0
     best_bleu = 0.0
     for epoch_n in range(args.epochs):
-        logging.info("Epoch %d starts, so far %d steps.", epoch_n + 1, steps)
+        logging.info("Epoch %d starts, so far %d steps.", epoch_n + 1, updates)
         for (src_data, src_mask), (tgt_data, tgt_mask) in train_batches:
             steps += 1
 
@@ -300,14 +301,10 @@ def main():
 
             loss.backward()
 
-            if steps % args.validation_period == 0:
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        tb_writer.add_histogram(name, param.grad, steps)
-
             if steps % args.delay_update == 0:
-                logging.info("Step %d, loss %.4g", steps, loss.item())
-                tb_writer.add_scalar("loss/train", loss, global_step=steps)
+                updates += 1
+                logging.info("Step %d, loss %.4g", updates, loss.item())
+                tb_writer.add_scalar("loss/train", loss, global_step=updates)
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
                 optimizer.step()
@@ -315,31 +312,42 @@ def main():
                 scheduler.step()
                 torch.cuda.empty_cache()
 
-            if steps % args.validation_period == 0:
-                val_loss, val_bleu, val_chrf, val_samples = validate(
-                    model, val_batches, loss_function, device, tokenizer,
-                    tb_writer, steps,
-                    steps % (4 * args.validation_period) == 0)
+                is_extra_validation = (
+                    (updates % 4 * args.validation_period)
+                        == 4 * args.validation_period - 1)
 
-                val_out_path = os.path.join(experiment_dir, "validation.out")
-                with open(val_out_path, "w") as f_val:
-                    for _, _, hyp in val_samples:
-                        print(hyp, file=f_val)
+                if is_extra_validation:
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            tb_writer.add_histogram(name, param.grad, updates)
 
-                logging.info(
-                    "VALIDATION: Step %d (epoch %d), loss %.4g, "
-                    "BLEU: %.4g chrF: %.4g",
-                    steps, epoch_n + 1, val_loss, val_bleu, val_chrf)
+                if (updates % args.validation_period ==
+                        args.validation_period - 1):
+                    val_loss, val_bleu, val_chrf, val_samples = validate(
+                        model, val_batches, loss_function, device, tokenizer,
+                        tb_writer, updates, is_extra_validation)
 
-                if val_bleu > best_bleu:
-                    logging.info("New best BLEU, saving model.")
-                    best_bleu = val_bleu
-                    cpu_save_state_dict(model, experiment_dir, "best_bleu.pt")
-                cpu_save_state_dict(
-                    model, experiment_dir, "last_checkpoint.pt")
-                torch.save(
-                    optimizer.state_dict(),
-                    os.path.join(experiment_dir, "last_optimizer.pt"))
+                    val_out_path = os.path.join(
+                        experiment_dir, "validation.out")
+                    with open(val_out_path, "w") as f_val:
+                        for _, _, hyp in val_samples:
+                            print(hyp, file=f_val)
+
+                    logging.info(
+                        "VALIDATION: Step %d (epoch %d), loss %.4g, "
+                        "BLEU: %.4g chrF: %.4g",
+                        updates, epoch_n + 1, val_loss, val_bleu, val_chrf)
+
+                    if val_bleu > best_bleu:
+                        logging.info("New best BLEU, saving model.")
+                        best_bleu = val_bleu
+                        cpu_save_state_dict(
+                            model, experiment_dir, "best_bleu.pt")
+                    cpu_save_state_dict(
+                        model, experiment_dir, "last_checkpoint.pt")
+                    torch.save(
+                        optimizer.state_dict(),
+                        os.path.join(experiment_dir, "last_optimizer.pt"))
 
         random.shuffle(train_batches)
 

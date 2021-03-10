@@ -5,7 +5,7 @@ from torch import nn
 from torch.functional import F
 from transformers.modeling_bert import BertConfig, BertModel
 
-from encoder import CharToPseudoWord, Encoder
+from encoder import CharToPseudoWord, Encoder, VanillaEncoder
 
 T = torch.Tensor
 
@@ -404,7 +404,8 @@ class VanillaDecoder(nn.Module):
             layers: int = 6,
             ff_dim: int = None,
             attention_heads: int = 8,
-            dropout: float = 0.1) -> None:
+            dropout: float = 0.1,
+            encoder: VanillaEncoder = None) -> None:
         super().__init__()
 
         self.dim = dim
@@ -413,7 +414,7 @@ class VanillaDecoder(nn.Module):
         self.char_vocabulary_size = char_vocabulary_size
 
         config = BertConfig(
-            vocab_size=dim,
+            vocab_size=char_vocabulary_size,
             is_decoder=True,
             add_cross_attention=True,
             hidden_size=dim,
@@ -426,7 +427,12 @@ class VanillaDecoder(nn.Module):
             output_attentions=True)
         self.transformer = BertModel(config)
 
+        if encoder is not None:
+            self.transformer.embeddings = encoder.transformer.embeddings
+
         self.output_proj = nn.Linear(dim, char_vocabulary_size)
+        self.output_proj.weight = \
+            self.transformer.embeddings.word_embeddings.weight
 
     @property
     def embeddings(self) -> nn.Module:
