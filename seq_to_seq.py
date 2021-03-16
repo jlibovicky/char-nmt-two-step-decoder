@@ -1,6 +1,6 @@
 """Encoder-decoder model."""
 
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -27,7 +27,7 @@ def compute_attention_entropy(
     batch_head_entropies = (
         distr_entropies * query_mask.unsqueeze(1)).sum(2) / query_mask.sum()
 
-    return batch_head_entropies.mean(0).mean(0)
+    return batch_head_entropies.mean(0).mean(0).cpu().numpy()
 
 
 class Seq2SeqModel(nn.Module):
@@ -52,7 +52,7 @@ class Seq2SeqModel(nn.Module):
         self.layers = layers
 
         if vanilla_encoder:
-            self.encoder = VanillaEncoder(
+            self.encoder: Union[Encoder, VanillaEncoder] = VanillaEncoder(
                 char_vocabulary_size=vocab_size,
                 dim=dim,
                 layers=layers,
@@ -74,14 +74,14 @@ class Seq2SeqModel(nn.Module):
                 decoder_style_padding=share_char_repr)
 
         if vanilla_decoder:
-            self.decoder = VanillaDecoder(
+            self.decoder: Union[Decoder, VanillaDecoder] = VanillaDecoder(
                 char_vocabulary_size=vocab_size,
                 dim=dim,
                 layers=layers,
                 ff_dim=ff_dim,
                 attention_heads=attention_heads,
                 dropout=dropout,
-                encoder=self.encoder if (
+                encoder=self.encoder if ( # type: ignore
                     share_char_repr and vanilla_encoder) else None)
         else:
             self.decoder = Decoder(
@@ -97,11 +97,12 @@ class Seq2SeqModel(nn.Module):
                 ff_dim=ff_dim,
                 attention_heads=attention_heads,
                 dropout=dropout,
-                encoder=self.encoder if share_char_repr else None)
+                encoder=self.encoder if # type: ignore
+                    share_char_repr else None)
 
     def forward(
             self, src_batch: T, src_mask: T, tgt_batch: T, tgt_mask: T,
-            loss_function: nn.Module, log_details: bool = False) -> T:
+            loss_function: nn.Module, log_details: bool = False) -> Tuple[T, T]:
         encoded, enc_mask, enc_attention = self.encoder(src_batch, src_mask)
         loss, details = self.decoder(
             encoded, enc_mask, tgt_batch, tgt_mask, loss_function,

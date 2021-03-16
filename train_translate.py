@@ -78,6 +78,7 @@ def cpu_save_state_dict(
 def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
              loss_function, device, tokenizer, tb_writer,
              updates: int, log_details: bool):
+    max_val_len = int(1.2 * max(b[1][0].size(1) for b in batches))
     model.eval()
     loss_sum = 0
     source_sentences = []
@@ -93,7 +94,8 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
         details_list.append(details)
         loss_sum += loss
         decoded_ids = model.greedy_decode(
-            src_data, src_mask, tokenizer.eos_token_id)[0]
+            src_data, src_mask, tokenizer.eos_token_id,
+            max_len=max_val_len)[0]
         source_sentences.extend(tokenizer.batch_decode(src_data))
         decoded_sentences.extend(tokenizer.batch_decode(decoded_ids))
         target_sentences.extend(tokenizer.batch_decode(tgt_data))
@@ -178,10 +180,6 @@ def main():
         "val_src", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument(
         "val_tgt", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
-    parser.add_argument(
-        "test_src", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
-    parser.add_argument(
-        "test_src", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--char-emb-dim", type=int, default=64)
@@ -194,13 +192,13 @@ def main():
     parser.add_argument("--highway-layers", type=int, default=2)
     parser.add_argument("--char-ff-layers", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=0.001)
-    parser.add_argument("--warmup", type=int, default=100)
+    parser.add_argument("--warmup", type=int, default=3000)
     parser.add_argument("--label-smoothing", type=float, default=0.1)
     parser.add_argument("--delay-update", type=int, default=1)
-    parser.add_argument("--validation-period", type=int, default=40)
+    parser.add_argument("--validation-period", type=int, default=200)
     parser.add_argument(
         "--convolutions", nargs="+",
-        default=[128, 256, 512, 512, 512], type=int)
+        default=[128, 256, 512, 512, 256], type=int)
     parser.add_argument(
         "--vanilla-encoder", action="store_true", default=False)
     parser.add_argument(

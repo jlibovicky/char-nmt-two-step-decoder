@@ -62,6 +62,7 @@ def main():
         layers=exp_args.get("layers"),
         attention_heads=exp_args.get("attention_heads"),
         dropout=exp_args.get("dropout"),
+        vanilla_encoder=exp_args.get("vanilla_encoder"),
         vanilla_decoder=exp_args.get("vanilla_decoder"),
         share_char_repr=exp_args.get("share_char_repr")).to(device)
 
