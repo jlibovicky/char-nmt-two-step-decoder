@@ -21,6 +21,7 @@ from tqdm import trange
 from experiment import experiment_logging, get_timestamp
 from seq_to_seq import Seq2SeqModel
 from lr_scheduler import NoamLR
+from label_smoothing import SmoothCrossEntropyLoss
 
 
 T = torch.Tensor
@@ -194,6 +195,7 @@ def main():
     parser.add_argument("--char-ff-layers", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--warmup", type=int, default=100)
+    parser.add_argument("--label-smoothing", type=float, default=0.1)
     parser.add_argument("--delay-update", type=int, default=1)
     parser.add_argument("--validation-period", type=int, default=40)
     parser.add_argument(
@@ -282,7 +284,7 @@ def main():
         "%d word vocabulary.",
         char_params, char_params // args.dim)
 
-    loss_function = nn.CrossEntropyLoss(reduction='none')
+    loss_function = SmoothCrossEntropyLoss(reduction='none')
     optimizer = optim.Adam(model.parameters())
     scheduler = NoamLR(optimizer, args.warmup)
 
