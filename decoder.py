@@ -166,7 +166,7 @@ class Decoder(nn.Module):
 
             return (
                 (loss_per_char * target_mask.reshape(-1)).sum() /
-                target_mask.sum())
+                target_mask.sum(), details)
 
         # DECODING WITH LSTM
         small_decoder_start = torch.ones(
@@ -531,3 +531,95 @@ class VanillaDecoder(nn.Module):
                 break
 
         return decoded, None
+
+    @torch.no_grad()
+    def beam_search(
+            self,
+            encoder_states: T,
+            encoder_mask: T,
+            eos_token_id: int,
+            beam_size: int,
+            len_norm: float,
+            max_len: int = 300) -> Tuple[T, T]:
+        batch_size = encoder_states.size(0)
+        cur_len = 1
+        current_beam = 1
+
+        decoded = torch.ones(
+            (batch_size, 1, 0),
+            dtype=torch.long).to(encoder_states.device)
+        finished = torch.zeros(
+            (batch_size, 1, 0),
+            dtype=torch.bool).to(encoder_states.device)
+        scores = torch.zeros((batch_size, 1)).to(encoder_states.device)
+
+        flat_decoded = decoded.squeeze(1)
+        flat_finished = finished.squeeze(1)
+        while cur_len < max_len:
+            states, _, _ = self._hidden_states(
+                encoder_states, encoder_mask,
+                flat_decoded, ~flat_finished,
+                for_training=False)
+            last_state = states[:, -1:]
+            next_token_logprobs = F.log_softmax(self.output_proj(
+                last_state), dim=-1)
+
+            # get scores of all expanded hypotheses
+            candidate_scores = (
+                scores.unsqueeze(2) +
+                next_token_logprobs.reshape(batch_size, current_beam, -1))
+            norm_factor = torch.pow(
+                (1 - finished.float()).sum(2, keepdim=True) + 1, len_norm)
+            normed_scores = candidate_scores / norm_factor
+
+            # reshape for beam members and get top k
+            _, best_indices = normed_scores.reshape(
+                batch_size, -1).topk(beam_size, dim=-1)
+            next_symbol_ids = best_indices % self.char_vocabulary_size
+            hypothesis_ids = best_indices // self.char_vocabulary_size
+
+            # numbering elements in the extended batch, i.e. beam size copies
+            # of each batch element
+            beam_offset = torch.arange(
+                0, batch_size * current_beam, step=current_beam,
+                dtype=torch.long, device=encoder_states.device)
+            global_best_indices = (
+                beam_offset.unsqueeze(1) + hypothesis_ids).reshape(-1)
+
+            # now select appropriate histories
+            decoded = torch.cat((
+                flat_decoded.index_select(
+                    0, global_best_indices).reshape(batch_size, beam_size, -1),
+                next_symbol_ids.unsqueeze(-1)), dim=2)
+            reordered_finished = flat_finished.index_select(
+                0, global_best_indices).reshape(batch_size, beam_size, -1)
+            finished_now = (next_symbol_ids == eos_token_id)
+            #if reordered_finished.size(2) > 0:
+            #    finished_now += reordered_finished[:, :, -1]
+            finished = torch.cat((
+                reordered_finished,
+                finished_now.unsqueeze(-1)), dim=2)
+            if finished_now.all():
+                break
+
+            # re-order scores
+            scores = candidate_scores.reshape(
+                batch_size, -1).gather(-1, best_indices)
+
+            # tile encoder after first step
+            if cur_len == 1:
+                encoder_states = encoder_states.unsqueeze(1).repeat(
+                    1, beam_size, 1, 1).reshape(
+                        batch_size * beam_size, encoder_states.size(1),
+                        encoder_states.size(2))
+                encoder_mask = encoder_mask.unsqueeze(1).repeat(
+                    1, beam_size, 1).reshape(batch_size * beam_size, -1)
+
+            # in the first iteration, beam size is 1, in the later ones,
+            # it is the real beam size
+            flat_decoded = decoded.reshape(-1, cur_len)
+            flat_finished = finished.reshape(-1, cur_len)
+            current_beam = beam_size
+            cur_len += 1
+
+        return (decoded[:, 0], finished[:, 0].logical_not())
