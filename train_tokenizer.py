@@ -2,7 +2,6 @@
 
 import argparse
 import logging
-from typing import Iterable, List
 import random
 
 import joblib

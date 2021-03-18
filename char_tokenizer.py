@@ -57,9 +57,7 @@ class BaseTokenizer(ABC):
             token_ids: Union[int, List[int], np.ndarray, torch.Tensor]) -> str:
         pass
 
-    def batch_decode(
-            self,
-            token_ids: Union[List[List[int]], np.ndarray, torch.Tensor]) -> List[str]:
+    def batch_decode(self, token_ids: BATCH) -> List[str]:
         if isinstance(token_ids, np.ndarray):
             assert len(token_ids.shape) == 2
         if isinstance(token_ids, torch.Tensor):
