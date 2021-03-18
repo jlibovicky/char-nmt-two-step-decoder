@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 
 class SmoothCrossEntropyLoss(_WeightedLoss):
-    def __init__(self, weight=None, reduction='mean', smoothing=0.0):
+    def __init__(self, weight=None, reduction="mean", smoothing=0.0):
         super().__init__(weight=weight, reduction=reduction)
         self.smoothing = smoothing
         self.weight = weight
@@ -36,9 +36,9 @@ class SmoothCrossEntropyLoss(_WeightedLoss):
 
         loss = -(targets * lsm).sum(-1)
 
-        if  self.reduction == 'sum':
+        if  self.reduction == "sum":
             loss = loss.sum()
-        elif  self.reduction == 'mean':
+        elif  self.reduction == "mean":
             loss = loss.mean()
 
         return loss

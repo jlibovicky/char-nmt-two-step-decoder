@@ -13,7 +13,7 @@ T = torch.Tensor
 
 
 def compute_attention_entropy(
-        att_matrix: T, query_mask: T, key_mask: T) -> float:
+        att_matrix: T, query_mask: T) -> float:
     # att matrix is: batch x heads x q_len x k_len
 
     # first entropy of each distribution, non-existing key positions
@@ -112,14 +112,14 @@ class Seq2SeqModel(nn.Module):
         if log_details:
             details["enc_attentions"] = enc_attention
             details["enc_attention_entropies"] = [
-                compute_attention_entropy(att, enc_mask, enc_mask)
+                compute_attention_entropy(att, enc_mask)
                 for att in enc_attention]
             shrinked_mask = details["decoder_mask"]
             details["dec_attention_entropies"] = [
-                compute_attention_entropy(att, shrinked_mask, shrinked_mask)
+                compute_attention_entropy(att, shrinked_mask)
                 for att in details["decoder_self_attention"]]
             details["encdec_attention_entropies"] = [
-                compute_attention_entropy(att, shrinked_mask, enc_mask)
+                compute_attention_entropy(att, shrinked_mask)
                 for att in details["decoder_self_attention"]]
 
         return loss, details

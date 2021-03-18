@@ -5,27 +5,19 @@
 import argparse
 import logging
 import os
-from typing import Iterable, Dict
-import random
 import sys
 
-import joblib
+import joblib # type: ignore
 import yaml
-import sacrebleu
-from tensorboardX import SummaryWriter
 import torch
-import torch.nn as nn
-import torch.optim as optim
 
-import char_tokenizer
-import bigram_tokenizer
 from seq_to_seq import Seq2SeqModel
 
 
 T = torch.Tensor
 
 
-logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
+logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 
 
 def main():
@@ -47,7 +39,7 @@ def main():
     with open(os.path.join(args.model_dir, "args")) as f_args:
         exp_args = yaml.load(f_args, Loader=yaml.FullLoader)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info("Initializing model on device %s.", device)
     model = Seq2SeqModel(
         tokenizer.vocab_size,
@@ -68,7 +60,7 @@ def main():
 
     logging.info("Load model parameters from file.")
     state_dict = torch.load(
-        os.path.join(args.model_dir, 'best_bleu.pt'),
+        os.path.join(args.model_dir, "best_bleu.pt"),
         map_location=device)
     model.load_state_dict(state_dict)
     logging.info("Translating.")

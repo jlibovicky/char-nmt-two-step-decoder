@@ -1,13 +1,20 @@
+"""Noam Learning Rate Schedule.
+
+Copied from
+https://github.com/tugstugi/pytorch-saltnet/blob/master/utils/lr_scheduler.py
+"""
+
 from torch.optim.lr_scheduler import _LRScheduler
 
-"""Copied from https://github.com/tugstugi/pytorch-saltnet/blob/master/utils/lr_scheduler.py"""
-
 class NoamLR(_LRScheduler):
-    """
-    Implements the Noam Learning rate schedule. This corresponds to increasing the learning rate
-    linearly for the first ``warmup_steps`` training steps, and decreasing it thereafter proportionally
-    to the inverse square root of the step number, scaled by the inverse square root of the
-    dimensionality of the model. Time will tell if this is just madness or it's actually important.
+    """Implements the Noam Learning rate schedule.
+
+    This corresponds to increasing the learning rate linearly for the first
+    ``warmup_steps`` training steps, and decreasing it thereafter
+    proportionally to the inverse square root of the step number, scaled by the
+    inverse square root of the dimensionality of the model. Time will tell if
+    this is just madness or it's actually important.
+
     Parameters
     ----------
     warmup_steps: ``int``, required.
@@ -19,5 +26,8 @@ class NoamLR(_LRScheduler):
 
     def get_lr(self):
         last_epoch = max(1, self.last_epoch)
-        scale = self.warmup_steps ** 0.5 * min(last_epoch ** (-0.5), last_epoch * self.warmup_steps ** (-1.5))
+        scale = (
+            self.warmup_steps ** 0.5 *
+            min(last_epoch ** (-0.5),
+                last_epoch * self.warmup_steps ** (-1.5)))
         return [base_lr * scale for base_lr in self.base_lrs]

@@ -3,7 +3,7 @@ from typing import List, Tuple
 import torch
 from torch import nn
 import torch.nn.functional as F
-from transformers.modeling_bert import BertConfig, BertModel
+from transformers.modeling_bert import BertConfig, BertModel # type: ignore
 
 T = torch.Tensor
 
@@ -56,6 +56,7 @@ DEFAULT_FILTERS = [128, 256, 512, 512]
 
 class CharToPseudoWord(nn.Module):
     """Character-to-pseudoword encoder."""
+    # pylint: disable=too-many-arguments
     def __init__(
             self, input_dim: int,
             # pylint: disable=dangerous-default-value
@@ -110,6 +111,7 @@ class CharToPseudoWord(nn.Module):
 
         self.final_mask_shrink = nn.MaxPool1d(
             max_pool_window, max_pool_window, padding=0, ceil_mode=True)
+    # pylint: enable=too-many-arguments
 
 
     def forward(self, embedded_chars: T, mask: T) -> Tuple[T, T]:

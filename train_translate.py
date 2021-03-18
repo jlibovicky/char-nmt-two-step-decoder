@@ -3,7 +3,7 @@
 import argparse
 import logging
 import os
-from typing import IO, List, Tuple
+from typing import List, Tuple
 import random
 import shutil
 import sys
@@ -16,7 +16,6 @@ from tensorboardX import SummaryWriter
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tqdm import trange
 
 from data import preprocess_data
 from experiment import experiment_logging, get_timestamp
@@ -28,7 +27,7 @@ from label_smoothing import SmoothCrossEntropyLoss
 T = torch.Tensor
 
 
-logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
+logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 
 
 def cpu_save_state_dict(
@@ -117,12 +116,12 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
             model.encoder.embeddings.weight,
             metadata=tokenizer.idx_to_str,
             global_step=updates,
-            tag='Encoder embeddings')
+            tag="Encoder embeddings")
         tb_writer.add_embedding(
             model.decoder.embeddings.weight[:len(tokenizer.idx_to_str)],
             metadata=tokenizer.idx_to_str,
             global_step=updates,
-            tag='Decoder embeddings')
+            tag="Decoder embeddings")
         encoder_self_att_entropies = [
             np.mean([d["enc_attention_entropies"][i] for d in details_list])
             for i in range(model.encoder.layers)]
@@ -235,7 +234,7 @@ def main():
         tokenizer, args.val_src, args.val_tgt,
         args.batch_size, sort_by_length=False)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info("Initializing model on device %s.", device)
     model = Seq2SeqModel(
         tokenizer.vocab_size,
@@ -257,7 +256,7 @@ def main():
     if args.continue_training is not None:
         logging.info("Load model paramters from file.")
         state_dict = torch.load(
-            os.path.join(args.continue_training, 'best_bleu.pt'),
+            os.path.join(args.continue_training, "best_bleu.pt"),
             map_location=device)
         model.load_state_dict(state_dict)
 
@@ -267,7 +266,7 @@ def main():
         "%d word vocabulary.",
         char_params, char_params // args.dim)
 
-    loss_function = SmoothCrossEntropyLoss(reduction='none')
+    loss_function = SmoothCrossEntropyLoss(reduction="none")
     optimizer = optim.Adam(model.parameters())
     scheduler = NoamLR(optimizer, args.warmup)
 
