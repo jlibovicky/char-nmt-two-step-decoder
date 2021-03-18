@@ -104,8 +104,6 @@ def postprocess_idx_list(
 
 class CharTokenizer(BaseTokenizer):
     """Char-level tokenizer that roughly floows the Huggingface API."""
-    def __init__(self, tokens: List[str]) -> None:
-        super().__init__(tokens)
 
     def batch_encode_plus(
             self,

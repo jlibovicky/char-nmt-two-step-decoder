@@ -102,7 +102,8 @@ class Seq2SeqModel(nn.Module):
 
     def forward(
             self, src_batch: T, src_mask: T, tgt_batch: T, tgt_mask: T,
-            loss_function: nn.Module, log_details: bool = False) -> Tuple[T, T]:
+            loss_function: nn.Module,
+            log_details: bool = False) -> Tuple[T, T]:
         encoded, enc_mask, enc_attention = self.encoder(src_batch, src_mask)
         loss, details = self.decoder(
             encoded, enc_mask, tgt_batch, tgt_mask, loss_function,
@@ -167,5 +168,7 @@ class Seq2SeqModel(nn.Module):
                 relevant_parts.extend([
                     self.decoder.char_embeddings, self.decoder.char_encoder])
 
-        return sum(p.numel() for part in relevant_parts
-                   for p in part.parameters())
+        char_parameters = {
+            p for part in relevant_parts for p in part.parameters()}
+
+        return sum(p.numel() for p in char_parameters)

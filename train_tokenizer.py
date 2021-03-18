@@ -11,7 +11,7 @@ import bigram_tokenizer
 import bpe_tokenizer
 
 
-logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
+logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
 
 
 def main():

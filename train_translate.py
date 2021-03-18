@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import trange
 
+from data import preprocess_data
 from experiment import experiment_logging, get_timestamp
 from seq_to_seq import Seq2SeqModel
 from lr_scheduler import NoamLR
@@ -30,54 +31,23 @@ T = torch.Tensor
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
 
 
-def preprocess_data(
-        train_src: IO[str], train_tgt: IO[str],
-        batch_size: int, tokenizer=None) -> List[Tuple[T, T]]:
-    logging.info("Loading file '%s'.", train_src.name)
-    src_text = [line.strip() for line in train_src]
-    logging.info("Loading file '%s'.", train_tgt.name)
-    tgt_text = [line.strip() for line in train_tgt]
-
-    batches = []
-    src_batch, tgt_batch = [], []
-    total_sentences = 0
-    skipped = 0
-    logging.info("Binarizing and batching data.")
-    pbar = trange(len(src_text), unit="sentences")
-    for _, src, tgt in zip(pbar, src_text, tgt_text):
-        total_sentences += 1
-        if len(src) > 300 or len(tgt) > 300:
-            skipped += 1
-            continue
-
-        src_batch.append(src)
-        tgt_batch.append(tgt)
-        if len(src_batch) >= batch_size:
-            batches.append((
-                tokenizer.batch_encode_plus(src_batch),
-                tokenizer.batch_encode_plus(tgt_batch)))
-            src_batch, tgt_batch = [], []
-    if src_batch:
-        batches.append((
-            tokenizer.batch_encode_plus(src_batch),
-            tokenizer.batch_encode_plus(tgt_batch)))
-
-    logging.info(
-        "Skipped %d sentences from %d in the dataset.",
-        skipped, total_sentences)
-    return batches
-
-
 def cpu_save_state_dict(
         model: Seq2SeqModel, experiment_dir: str, name: str) -> None:
     state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
     torch.save(state_dict, os.path.join(experiment_dir, name))
 
 
+def length_ratio(hyps: List[str], refs: List[str]) -> float:
+    ratio_sum = 0
+    for hyp, ref in zip(hyps, refs):
+        ratio_sum += len(hyp) / len(ref)
+    return ratio_sum / len(hyps)
+
+
 @torch.no_grad()
 def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
              loss_function, device, tokenizer, tb_writer,
-             updates: int, log_details: bool):
+             updates: int, sentences: int, log_details: bool):
     max_val_len = int(1.2 * max(b[1][0].size(1) for b in batches))
     model.eval()
     loss_sum = 0
@@ -108,14 +78,26 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
 
     bleu = sacrebleu.corpus_bleu(decoded_sentences, [target_sentences])
     chrf = sacrebleu.corpus_chrf(decoded_sentences, [target_sentences])
+    length = length_ratio(decoded_sentences, target_sentences)
 
     val_samples = zip(
         source_sentences, target_sentences, decoded_sentences)
     val_loss = loss_sum / len(batches)
 
-    tb_writer.add_scalar("loss/val", val_loss, global_step=updates)
-    tb_writer.add_scalar("bleu/val", bleu.score, global_step=updates)
-    tb_writer.add_scalar("chrf/val", chrf.score, global_step=updates)
+    tb_writer.add_scalar("loss/val_steps", val_loss, global_step=updates)
+    tb_writer.add_scalar("loss/val_sentences", val_loss, global_step=sentences)
+    tb_writer.add_scalar(
+        "translation/bleu_steps", bleu.score, global_step=updates)
+    tb_writer.add_scalar(
+        "translation/chrf_steps", chrf.score, global_step=updates)
+    tb_writer.add_scalar(
+        "translation/length_steps", length, global_step=updates)
+    tb_writer.add_scalar(
+        "translation/bleu_sentences", bleu.score, global_step=sentences)
+    tb_writer.add_scalar(
+        "translation/chrf_sentences", chrf.score, global_step=sentences)
+    tb_writer.add_scalar(
+        "translation/length_sentences", length, global_step=sentences)
 
     for i, (src, ref, hyp) in enumerate(val_samples):
         tb_writer.add_text(
@@ -142,15 +124,14 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
             global_step=updates,
             tag='Decoder embeddings')
         encoder_self_att_entropies = [
-            np.mean([d["enc_attention_entropies"][i].cpu()
-                     for d in details_list])
+            np.mean([d["enc_attention_entropies"][i] for d in details_list])
             for i in range(model.encoder.layers)]
         decoder_self_att_entropies = [
-            np.mean([d["dec_attention_entropies"][i].cpu()
+            np.mean([d["dec_attention_entropies"][i]
                      for d in details_list])
             for i in range(model.encoder.layers)]
         encdec_att_entropies = [
-            np.mean([d["encdec_attention_entropies"][i].cpu()
+            np.mean([d["encdec_attention_entropies"][i]
                      for d in details_list])
             for i in range(model.encoder.layers)]
         for i, ent in enumerate(encoder_self_att_entropies):
@@ -171,7 +152,8 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
 
 def main():
     parser = argparse.ArgumentParser(__doc__)
-    parser.add_argument("tokenizer", type=str, help="File with saved tokenizer.")
+    parser.add_argument(
+        "tokenizer", type=str, help="File with saved tokenizer.")
     parser.add_argument(
         "train_src", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument(
@@ -192,10 +174,10 @@ def main():
     parser.add_argument("--highway-layers", type=int, default=2)
     parser.add_argument("--char-ff-layers", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=0.001)
-    parser.add_argument("--warmup", type=int, default=3000)
+    parser.add_argument("--warmup", type=int, default=10000)
     parser.add_argument("--label-smoothing", type=float, default=0.1)
     parser.add_argument("--delay-update", type=int, default=1)
-    parser.add_argument("--validation-period", type=int, default=200)
+    parser.add_argument("--validation-period", type=int, default=1000)
     parser.add_argument(
         "--convolutions", nargs="+",
         default=[128, 256, 512, 512, 256], type=int)
@@ -246,9 +228,12 @@ def main():
 
     logging.info("Load and binarize data.")
     train_batches = preprocess_data(
-        args.train_src, args.train_tgt, args.batch_size, tokenizer=tokenizer)
+        tokenizer, args.train_src, args.train_tgt,
+        args.batch_size, sort_by_length=True)
+    random.shuffle(train_batches)
     val_batches = preprocess_data(
-        args.val_src, args.val_tgt, args.batch_size, tokenizer=tokenizer)
+        tokenizer, args.val_src, args.val_tgt,
+        args.batch_size, sort_by_length=False)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info("Initializing model on device %s.", device)
@@ -289,11 +274,13 @@ def main():
     logging.info("Training starts.")
     steps = 0
     updates = 0
+    sentences = 0
     best_bleu = 0.0
     for epoch_n in range(args.epochs):
         logging.info("Epoch %d starts, so far %d steps.", epoch_n + 1, updates)
         for (src_data, src_mask), (tgt_data, tgt_mask) in train_batches:
             steps += 1
+            sentences += src_data.size(0)
 
             loss, _ = model(
                 src_data.to(device), src_mask.to(device),
@@ -301,10 +288,10 @@ def main():
 
             loss.backward()
 
-            if steps % args.delay_update == 0:
+            if steps % args.delay_update == args.delay_update - 1:
                 updates += 1
-                logging.info("Step %d, loss %.4g", updates, loss.item())
-                tb_writer.add_scalar("loss/train", loss, global_step=updates)
+                logging.info("Step %d, %d sent., loss %.4g",
+                             updates, sentences, loss.item())
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
                 optimizer.step()
@@ -313,7 +300,7 @@ def main():
                 torch.cuda.empty_cache()
 
                 is_extra_validation = (
-                    (updates % 4 * args.validation_period)
+                    (updates % (4 * args.validation_period))
                         == 4 * args.validation_period - 1)
 
                 if is_extra_validation:
@@ -325,7 +312,12 @@ def main():
                         args.validation_period - 1):
                     val_loss, val_bleu, val_chrf, val_samples = validate(
                         model, val_batches, loss_function, device, tokenizer,
-                        tb_writer, updates, is_extra_validation)
+                        tb_writer, updates, sentences, is_extra_validation)
+
+                    tb_writer.add_scalar(
+                        "loss/train_steps", loss, global_step=updates)
+                    tb_writer.add_scalar(
+                        "loss/train_sentences", loss, global_step=sentences)
 
                     val_out_path = os.path.join(
                         experiment_dir, "validation.out")

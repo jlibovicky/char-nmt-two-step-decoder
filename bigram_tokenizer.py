@@ -15,9 +15,6 @@ from char_tokenizer import BaseTokenizer, SPECIAL_SYMBOLS, postprocess_idx_list
 
 
 class BigramTokenizer(BaseTokenizer):
-    def __init__(self, tokens: List[str]) -> None:
-        super().__init__(tokens)
-
     def batch_encode_plus(
             self,
             text: Union[str, List[str]],  # the sentence to be encoded
