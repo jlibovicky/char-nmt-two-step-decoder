@@ -168,6 +168,7 @@ def main():
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--shrink-factor", type=int, default=5)
     parser.add_argument("--nar-output", default=False, action="store_true")
+    parser.add_argument("--attention-output", default=False, action="store_true")
     parser.add_argument("--attention-heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--highway-layers", type=int, default=2)
@@ -211,6 +212,8 @@ def main():
         args.vanilla_encoder = previous_args["vanilla_encoder"]
         args.vanilla_decoder = previous_args["vanilla_decoder"]
         args.share_char_repr = previous_args["share_char_repr"]
+        args.nar_output = previous_args["nar_output"]
+        args.attention_output = previous_args.get("attention_output", False)
 
         logging.info("Loading tokenizer from the previous experiement.")
         tokenizer = joblib.load(
@@ -243,6 +246,7 @@ def main():
         dim=args.dim,
         shrink_factor=args.shrink_factor,
         nar_output=args.nar_output,
+        attention_output=args.attention_output,
         highway_layers=args.highway_layers,
         char_ff_layers=args.char_ff_layers,
         ff_dim=2 * args.dim,
