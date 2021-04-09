@@ -66,7 +66,8 @@ def _batch_data(
         binarized: List[Tuple[T, T]], max_size: int,
         pad_idx: int) -> List[Tuple[Tuple[T, T], Tuple[T, T]]]:
     batches = []
-    max_cur_len = 0
+    max_cur_src_len = 0
+    max_cur_tgt_len = 0
 
     src_batch: List[T] = []
     tgt_batch: List[T] = []
@@ -83,16 +84,21 @@ def _batch_data(
 
     pbar = trange(len(binarized), unit="sentences")
     for _, (src, tgt) in zip(pbar, binarized):
-        if src.size(0) > max_size:
+        if src.size(0) > max_size or tgt.size(0) > max_size:
             raise ValueError(
                 "Single instance is longer than maximum batch size.")
-        if len(src_batch) * max(max_cur_len, src.size(0)) > max_size:
+        future_max_src_len = max(max_cur_src_len, src.size(0))
+        future_max_tgt_len = max(max_cur_tgt_len, tgt.size(0))
+        if ((len(src_batch) * future_max_src_len > max_size) or
+            (len(tgt_batch) * future_max_tgt_len > max_size)):
             process_batch()
             src_batch, tgt_batch = [], []
-            max_cur_len = 0
+            max_cur_src_len = 0
+            max_cur_tgt_len = 0
         src_batch.append(src)
         tgt_batch.append(tgt)
-        max_cur_len = max(max_cur_len, src.size(0))
+        max_cur_src_len = future_max_src_len
+        max_cur_tgt_len = future_max_tgt_len
 
     process_batch()
     return batches
