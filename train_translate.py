@@ -37,7 +37,7 @@ def cpu_save_state_dict(
 
 
 def length_ratio(hyps: List[str], refs: List[str]) -> float:
-    ratio_sum = 0
+    ratio_sum = 0.
     for hyp, ref in zip(hyps, refs):
         ratio_sum += len(hyp) / len(ref)
     return ratio_sum / len(hyps)
@@ -176,12 +176,14 @@ def main():
         "val_tgt", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--char-emb-dim", type=int, default=64)
     parser.add_argument("--dim", type=int, default=512)
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--shrink-factor", type=int, default=5)
     parser.add_argument("--nar-output", default=False, action="store_true")
-    parser.add_argument("--attention-output", default=False, action="store_true")
+    parser.add_argument(
+        "--attention-output", default=False, action="store_true")
     parser.add_argument("--attention-heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--highway-layers", type=int, default=2)
@@ -275,7 +277,7 @@ def main():
     if args.continue_training is not None:
         logging.info("Load model paramters from file.")
         state_dict = torch.load(
-            os.path.join(args.continue_training, "best_bleu.pt"),
+            os.path.join(args.continue_training, "best_chrf.pt"),
             map_location=device)
         model.load_state_dict(state_dict)
 
@@ -293,7 +295,8 @@ def main():
     steps = 0
     updates = 0
     sentences = 0
-    best_bleu = 0.0
+    best_chrf = 0.0
+    stalled = 0
     for epoch_n in range(args.epochs):
         logging.info("Epoch %d starts, so far %d steps.", epoch_n + 1, updates)
         for (src_data, src_mask), (tgt_data, tgt_mask) in train_batches:
@@ -365,16 +368,24 @@ def main():
                         "BLEU: %.4g chrF: %.4g",
                         updates, epoch_n + 1, val_loss, val_bleu, val_chrf)
 
-                    if val_bleu > best_bleu:
-                        logging.info("New best BLEU, saving model.")
-                        best_bleu = val_bleu
+                    if val_chrf > best_chrf:
+                        logging.info("New best chrF, saving model.")
+                        best_chrf = val_chrf
                         cpu_save_state_dict(
-                            model, experiment_dir, "best_bleu.pt")
+                            model, experiment_dir, "best_chrf.pt")
+                        stalled = 0
+                    else:
+                        stalled += 1
+                        logging.info("BLEU score stalled %d times.", stalled)
                     cpu_save_state_dict(
                         model, experiment_dir, "last_checkpoint.pt")
                     torch.save(
                         optimizer.state_dict(),
                         os.path.join(experiment_dir, "last_optimizer.pt"))
+                    if stalled > args.patience:
+                        break
+        if stalled > args.patience:
+            break
 
         random.shuffle(train_batches)
 
