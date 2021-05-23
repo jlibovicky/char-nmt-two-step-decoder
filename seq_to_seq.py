@@ -1,11 +1,10 @@
 """Encoder-decoder model."""
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Tuple, Union
 
 import torch
 import torch.nn as nn
 
-from ctc_decoder import CharCTCDecoder
 from encoder import Encoder, VanillaEncoder
 from decoder import Decoder, VanillaDecoder
 
@@ -46,15 +45,10 @@ class Seq2SeqModel(nn.Module):
             layers: int = 6,
             attention_heads: int = 8,
             dropout: float = 0.1,
-            auxiliary_ctc: bool = False,
             vanilla_encoder: bool = False,
             vanilla_decoder: bool = False,
             share_char_repr: bool = False) -> None:
         super().__init__()
-
-        if auxiliary_ctc and vanilla_encoder:
-            raise ValueError(
-                "The auxiliary CTC loss only works with CNN-based encoder.")
 
         self.layers = layers
 
@@ -108,24 +102,14 @@ class Seq2SeqModel(nn.Module):
                 encoder=self.encoder if # type: ignore
                     share_char_repr else None)
 
-        self.ctc_decoder = None
-        if auxiliary_ctc:
-            self.ctc_decoder = CharCTCDecoder(
-                vocab_size, dim, 3 * shrink_factor, dropout)
-
     def forward(
             self, src_batch: T, src_mask: T, tgt_batch: T, tgt_mask: T,
             loss_function: nn.Module,
-            log_details: bool = False) -> Tuple[T, Optional[T], Dict]:
+            log_details: bool = False) -> Tuple[T, T]:
         encoded, enc_mask, enc_attention = self.encoder(src_batch, src_mask)
         loss, details = self.decoder(
             encoded, enc_mask, tgt_batch, tgt_mask, loss_function,
             log_details=log_details)
-
-        ctc_loss = None
-        if self.ctc_decoder is not None:
-            _, _, ctc_loss = self.ctc_decoder(
-                encoded, enc_mask, tgt_batch, tgt_mask)
 
         if log_details:
             details["enc_attentions"] = enc_attention
@@ -140,7 +124,7 @@ class Seq2SeqModel(nn.Module):
                 compute_attention_entropy(att, shrinked_mask)
                 for att in details["decoder_self_attention"]]
 
-        return loss, ctc_loss, details
+        return loss, details
 
     @torch.no_grad()
     def greedy_decode(

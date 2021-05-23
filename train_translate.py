@@ -49,22 +49,19 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
              updates: int, sentences: int, log_details: bool):
     max_val_len = int(1.2 * max(b[1][0].size(1) for b in batches))
     model.eval()
-    nll_loss_sum = 0
-    ctc_loss_sum = 0
+    loss_sum = 0
     source_sentences = []
     decoded_sentences = []
     target_sentences = []
     details_list = []
     for i, ((src_data, src_mask), (tgt_data, tgt_mask)) in enumerate(batches):
         src_data, src_mask = src_data.to(device), src_mask.to(device)
-        nll_loss, ctc_loss, details = model(
+        loss, details = model(
             src_data, src_mask,
             tgt_data.to(device), tgt_mask.to(device), loss_function,
             log_details=log_details)
         details_list.append(details)
-        nll_loss_sum += nll_loss
-        if ctc_loss is not None:
-            ctc_loss_sum += ctc_loss
+        loss_sum += loss
         decoded_ids = model.greedy_decode(
             src_data, src_mask, tokenizer.eos_token_id,
             max_len=max_val_len)[0]
@@ -84,20 +81,10 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
 
     val_samples = zip(
         source_sentences, target_sentences, decoded_sentences)
-    nll_val_loss = nll_loss_sum / len(batches)
-    ctc_val_loss = ctc_loss_sum / len(batches)
+    val_loss = loss_sum / len(batches)
 
-    tb_writer.add_scalar(
-        "loss/val_steps", nll_val_loss, global_step=updates)
-    tb_writer.add_scalar(
-        "loss/val_sentences", nll_val_loss, global_step=sentences)
-
-    if ctc_val_loss != 0:
-        tb_writer.add_scalar(
-            "loss/val_ctc_steps", nll_val_loss, global_step=updates)
-        tb_writer.add_scalar(
-            "loss/val_ctc_sentences", nll_val_loss, global_step=sentences)
-
+    tb_writer.add_scalar("loss/val_steps", val_loss, global_step=updates)
+    tb_writer.add_scalar("loss/val_sentences", val_loss, global_step=sentences)
     tb_writer.add_scalar(
         "translation/bleu_steps", bleu.score, global_step=updates)
     tb_writer.add_scalar(
@@ -130,11 +117,11 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
             metadata=tokenizer.idx_to_str,
             global_step=updates,
             tag="Encoder embeddings")
-        #tb_writer.add_embedding(
-        #    model.decoder.embeddings.weight[:len(tokenizer.idx_to_str)],
-        #    metadata=tokenizer.idx_to_str,
-        #    global_step=updates,
-        #    tag="Decoder embeddings")
+        tb_writer.add_embedding(
+            model.decoder.embeddings.weight[:len(tokenizer.idx_to_str)],
+            metadata=tokenizer.idx_to_str,
+            global_step=updates,
+            tag="Decoder embeddings")
         encoder_self_att_entropies = [
             np.mean([d["enc_attention_entropies"][i] for d in details_list])
             for i in range(model.encoder.layers)]
@@ -159,7 +146,7 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
                 f"details/encoder_decoder_att_entropy_layer{i + 1}",
                 ent, global_step=updates)
 
-    return nll_val_loss, bleu.score, chrf.score, val_samples
+    return val_loss, bleu.score, chrf.score, val_samples
 
 
 def main():
@@ -175,7 +162,7 @@ def main():
     parser.add_argument(
         "val_tgt", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--char-emb-dim", type=int, default=64)
     parser.add_argument("--dim", type=int, default=512)
@@ -188,7 +175,6 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--highway-layers", type=int, default=2)
     parser.add_argument("--char-ff-layers", type=int, default=2)
-    parser.add_argument("--ctc-loss", type=float, default=None)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--warmup", type=int, default=10000)
     parser.add_argument("--label-smoothing", type=float, default=0.1)
@@ -269,7 +255,6 @@ def main():
         layers=args.layers,
         attention_heads=args.attention_heads,
         dropout=args.dropout,
-        auxiliary_ctc=args.ctc_loss is not None,
         vanilla_encoder=args.vanilla_encoder,
         vanilla_decoder=args.vanilla_decoder,
         share_char_repr=args.share_char_repr).to(device)
@@ -303,13 +288,10 @@ def main():
             steps += 1
             sentences += src_data.size(0)
 
-            nll_loss, ctc_loss, _ = model(
+            loss, _ = model(
                 src_data.to(device), src_mask.to(device),
                 tgt_data.to(device), tgt_mask.to(device), loss_function)
 
-            loss = nll_loss
-            if args.ctc_loss is not None:
-                loss = nll_loss + args.ctc_loss * ctc_loss
             loss.backward()
 
             if steps % args.delay_update == args.delay_update - 1:
@@ -323,10 +305,9 @@ def main():
                 scheduler.step()
                 torch.cuda.empty_cache()
 
-                #is_extra_validation = (
-                #    (updates % (4 * args.validation_period))
-                #        == 4 * args.validation_period - 1)
-                is_extra_validation = False
+                is_extra_validation = (
+                    (updates % (4 * args.validation_period))
+                        == 4 * args.validation_period - 1)
 
                 if is_extra_validation:
                     for name, param in model.named_parameters():
@@ -343,19 +324,6 @@ def main():
                         "loss/train_steps", loss, global_step=updates)
                     tb_writer.add_scalar(
                         "loss/train_sentences", loss, global_step=sentences)
-                    tb_writer.add_scalar(
-                        "loss/train_nll_steps", nll_loss, global_step=updates)
-                    tb_writer.add_scalar(
-                        "loss/train_nll_sentences", nll_loss,
-                        global_step=sentences)
-
-                    if ctc_loss is not None:
-                        tb_writer.add_scalar(
-                            "loss/train_ctc_steps", ctc_loss,
-                            global_step=updates)
-                        tb_writer.add_scalar(
-                            "loss/train_ctc_sentences", ctc_loss,
-                            global_step=sentences)
 
                     val_out_path = os.path.join(
                         experiment_dir, "validation.out")
