@@ -1,19 +1,13 @@
-from collections import namedtuple
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import nn
 from torch.functional import F
-from transformers.modeling_bert import ( # type: ignore
-    BertConfig, BertModel, BertSelfAttention)
+from transformers.modeling_bert import BertConfig, BertModel
 
 from encoder import CharToPseudoWord, Encoder, VanillaEncoder
 
 T = torch.Tensor
-AttConfig = namedtuple(
-    "AttConfig",
-    ["hidden_size", "num_attention_heads", "output_attentions",
-     "attention_probs_dropout_prob"])
 
 
 class Decoder(nn.Module):
@@ -25,7 +19,6 @@ class Decoder(nn.Module):
             conv_filters: List[int],
             dim: int,
             nar_output: bool = False,
-            attention_output: bool = False,
             shrink_factor: int = 5,
             highway_layers: int = 2,
             char_ff_layers: int = 2,
@@ -43,7 +36,6 @@ class Decoder(nn.Module):
         self.char_vocabulary_size = char_vocabulary_size
         self.shrink_factor = shrink_factor
         self.nar_output = nar_output
-        self.attention_output = attention_output
         self.char_embedding_dim = char_embedding_dim
 
         if encoder is not None:
@@ -89,21 +81,10 @@ class Decoder(nn.Module):
 
         if not self.nar_output:
             self.char_decoder_rnn = nn.LSTM(
-                2 * char_embedding_dim,
-                2 * char_embedding_dim, batch_first=True)
-            self.output_proj = nn.Linear(
-                3 * char_embedding_dim, char_vocabulary_size)
+                2 * char_embedding_dim, 2 * char_embedding_dim, batch_first=True)
+            self.output_proj = nn.Linear(3 * char_embedding_dim, char_vocabulary_size)
         else:
-            self.output_proj = nn.Linear(
-                char_embedding_dim, char_vocabulary_size)
-
-        if self.attention_output:
-            self.encoder_to_attn = nn.Linear(
-                dim, 2 * char_embedding_dim)
-            self.decoder_to_attn = nn.Linear(
-                dim, 2 * char_embedding_dim)
-            self.output_attn = BertSelfAttention(AttConfig(
-                2 * char_embedding_dim, 4, True, dropout))
+            self.output_proj = nn.Linear(char_embedding_dim, char_vocabulary_size)
 
         #self.output_proj = nn.Sequential(
         #    nn.Linear(char_embedding_dim, 2 * char_embedding_dim),
@@ -167,8 +148,7 @@ class Decoder(nn.Module):
             details = {}
 
         batch_size = encoder_states.size(0)
-        (decoder_states, shrinked_mask,
-         self_att, encdec_att) = self._hidden_states(
+        decoder_states, shrinked_mask, self_att, encdec_att = self._hidden_states(
             encoder_states, encoder_mask, target_ids, target_mask,
             for_training=True)
 
@@ -188,10 +168,6 @@ class Decoder(nn.Module):
                 (loss_per_char * target_mask.reshape(-1)).sum() /
                 target_mask.sum(), details)
 
-        if self.attention_output:
-            att_proj_decoder = self.decoder_to_attn(decoder_states)
-            att_proj_encoder = self.encoder_to_attn(encoder_states)
-
         # DECODING WITH LSTM
         small_decoder_start = torch.ones(
             (batch_size, 1), dtype=torch.int64).to(target_ids.device)
@@ -209,8 +185,7 @@ class Decoder(nn.Module):
                 target_mask.size(1),
                 (i + 1) * self.char_encoder.max_pool_window)
             step_input_ids = pad_target_ids[:, decode_start:decode_end]
-            step_output_ids = \
-                pad_target_ids[:, decode_start + 1: decode_end + 1]
+            step_output_ids = pad_target_ids[:, decode_start + 1: decode_end + 1]
 
             step_mask = target_mask[:, decode_start:decode_end]
             step_char_states = char_states[:, decode_start:decode_end]
@@ -219,20 +194,6 @@ class Decoder(nn.Module):
             step_states, rnn_state = self.char_decoder_rnn(
                 torch.cat((step_embedded, step_char_states), dim=2),
                 rnn_state)
-
-            if self.attention_output:
-                to_attend = torch.cat(
-                    (att_proj_encoder, att_proj_decoder[:, :i + 1]), dim=1)
-                to_attend_mask = torch.cat(
-                    (encoder_mask, shrinked_mask[:, :i + 1]), dim=1)
-                outer_mask = (
-                    (step_mask.unsqueeze(2) *
-                        to_attend_mask.unsqueeze(1)).unsqueeze(1) - 1) * 1e12
-                step_states = self.output_attn(
-                    step_states, attention_mask=step_mask,
-                    encoder_hidden_states=to_attend,
-                    encoder_attention_mask=outer_mask)[0]
-
             this_step_logits = self.output_proj(
                 torch.cat([step_states, step_char_states], dim=2))
 
@@ -240,20 +201,19 @@ class Decoder(nn.Module):
                 this_step_logits.reshape(-1, self.char_vocabulary_size),
                 step_output_ids.reshape(-1))
             loss_sum += (step_loss * step_mask.reshape(-1)).sum()
-            mask_sum += step_mask.sum() # type: ignore
+            mask_sum += step_mask.sum()
 
             if log_details:
                 step_entropies = -(
                     F.log_softmax(this_step_logits, dim=1) *
                     F.softmax(this_step_logits, dim=-1)).sum(2)
-                entropy_sum += ( # type: ignore
-                    step_entropies * step_mask).sum()
+                entropy_sum += (step_entropies * step_mask).sum()
 
         if details is not None:
             details["output_entropy"] = entropy_sum / mask_sum
-            details["decoder_self_attention"] = self_att.cpu()
-            details["ecnoder_decoder_attention"] = encdec_att.cpu()
-            details["decoder_mask"] = shrinked_mask.cpu()
+            details["decoder_self_attention"] = self_att
+            details["ecnoder_decoder_attention"] = encdec_att
+            details["decoder_mask"] = shrinked_mask
 
         return loss_sum / mask_sum, details
 
@@ -266,9 +226,6 @@ class Decoder(nn.Module):
             max_len: int = 300) -> Tuple[T, T]:
         batch_size = encoder_states.size(0)
         step_size = self.char_encoder.max_pool_window
-
-        if self.attention_output:
-            att_proj_encoder = self.encoder_to_attn(encoder_states)
 
         decoded = torch.ones(
             (batch_size, 0),
@@ -283,15 +240,11 @@ class Decoder(nn.Module):
 
         rnn_state = None
         for _ in range(max_len // step_size + 1):
-            states, shrinked_mask, _, _ = self._hidden_states(
+            states, _, _, _ = self._hidden_states(
                 encoder_states, encoder_mask,
                 decoded,
                 torch.ones_like(decoded, dtype=torch.float),
                 for_training=False)
-
-            if self.attention_output:
-                att_proj_decoder = self.decoder_to_attn(states)
-
             last_state = states[:, -1:]
             char_states = self.nar_proj(last_state).reshape(
                 batch_size, -1, self.char_embedding_dim)
@@ -309,27 +262,9 @@ class Decoder(nn.Module):
                         (embeded_prev, char_states[:, i:i+1]), dim=2)
                     rnn_output, rnn_state = self.char_decoder_rnn(
                         rnn_input, rnn_state)
-
-                    if self.attention_output:
-                        to_attend = torch.cat(
-                            (att_proj_encoder,
-                             att_proj_decoder[:, :i + 1]), dim=1)
-                        to_attend_mask = torch.cat(
-                            (encoder_mask, shrinked_mask[:, :i + 1]), dim=1)
-                        outer_mask = (
-                            to_attend_mask.unsqueeze(1).unsqueeze(1)
-                            - 1) * 1e12
-                        step_states = self.output_attn(
-                            rnn_output,
-                            encoder_hidden_states=to_attend,
-                            encoder_attention_mask=outer_mask)[0]
-                    else:
-                        step_states = rnn_output
-
                     next_chars = self.output_proj(
                         torch.cat(
-                            [step_states,
-                             char_states[:, i:i+1]], dim=2)).argmax(2)
+                            [rnn_output, char_states[:, i:i+1]], dim=2)).argmax(2)
                     new_chars.append(next_chars)
                     finished = finished + (next_chars == eos_token_id)
 
