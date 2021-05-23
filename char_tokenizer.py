@@ -150,10 +150,12 @@ class CharTokenizer(BaseTokenizer):
             assert len(token_ids.shape) == 1
 
         chars = []
-        for char_id in token_ids:
-            if char_id == self.bos_token_id:
+        for i, char_id in enumerate(token_ids):
+            if i > 0 and char_id == token_ids[i - 1]:
                 continue
-            if char_id in [self.eos_token_id, self.pad_token_id]:
+            if char_id in [self.bos_token_id, self.pad_token_id]:
+                continue
+            if char_id == self.eos_token_id:
                 break
             chars.append(self.idx_to_str[char_id])
         return "".join(chars)
@@ -162,7 +164,8 @@ class CharTokenizer(BaseTokenizer):
 def from_data(
         text: List[str],
         max_vocab: int = None,
-        max_lines: int = None) -> CharTokenizer:
+        max_lines: int = None,
+        min_frequency: int = None) -> CharTokenizer:
     """Create char-level tokenizer from data."""
 
     vocab_counter: typing.Counter[str] = Counter()
@@ -173,6 +176,11 @@ def from_data(
     for _, sent in zip(pbar, text):
         vocab_counter.update(sent)
     pbar.close()
+
+    if min_frequency is not None:
+        vocab_counter = Counter({
+            key: count for key, count in vocab_counter.items()
+            if count > min_frequency})
 
     if max_vocab is None:
         vocab_list = list(vocab_counter.keys())

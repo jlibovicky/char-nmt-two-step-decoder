@@ -24,6 +24,7 @@ def main():
         "output", type=argparse.FileType("wb"))
     parser.add_argument("--max-vocab-size", type=int, default=300)
     parser.add_argument("--max-lines", type=int, default=None)
+    parser.add_argument("--min-frequency", type=int, default=None)
     parser.add_argument(
         "--tokenizer-type", type=str, default="char",
         choices=["char", "bigram", "bpe"])
@@ -50,8 +51,10 @@ def main():
     tokenizer = tokenizer_fn(
         all_data,
         max_vocab=args.max_vocab_size,
-        max_lines=args.max_lines)
+        max_lines=args.max_lines,
+        min_frequency=args.min_frequency)
 
+    #logging.info("The vocabulary as %d items.", tokenizer.vocab_size)
     joblib.dump(tokenizer, args.output)
     logging.info("Tokenzier saved to %s.", args.output.name)
 

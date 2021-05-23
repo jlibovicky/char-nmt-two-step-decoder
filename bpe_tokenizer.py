@@ -3,6 +3,7 @@ import os
 import tempfile
 from typing import List, Union
 
+import sacremoses
 import numpy as np
 import torch
 from tqdm import trange
@@ -16,6 +17,8 @@ class BPETokenizer(BaseTokenizer):
         super().__init__(SPECIAL_SYMBOLS)
         self.codes = codes
         self._tokenizer: yttm.BPE = None
+        self.pretokenizer = sacremoses.MosesTokenizer()
+        self.detokenizer = sacremoses.MosesDetokenizer()
 
     @property
     def tokenizer(self) -> yttm.BPE:
@@ -50,8 +53,9 @@ class BPETokenizer(BaseTokenizer):
 
         idx_list = []
         for sent in text:
+            pretok_sent = " ".join(self.pretokenizer.tokenize(sent))
             ids = self.tokenizer.encode(
-                sent, bos=add_special_tokens, eos=add_special_tokens)
+                pretok_sent, bos=add_special_tokens, eos=add_special_tokens)
 
             if max_length is not None and len(ids) > max_length:
                 if truncation:
@@ -77,23 +81,28 @@ class BPETokenizer(BaseTokenizer):
 
         decoded = self.tokenizer.decode(
             token_ids.tolist(), ignore_ids=[0, 1, 2, 3])[0]
-        return decoded
+        return self.detokenizer.detokenize(decoded.split(" "))
 
 
 def from_data(
         text: List[str],
         max_vocab: int = None,
-        max_lines: int = None) -> BPETokenizer:
+        max_lines: int = None,
+        min_frequency: int = None) -> BPETokenizer:
+    if min_frequency is not None:
+        raise ValueError(
+            "With BPE minimum token frequency must not be defined.")
 
     if max_lines is not None:
         text = text[:max_lines]
 
+    pretokenizer = sacremoses.MosesTokenizer()
     tmp_input_file = tempfile.mkstemp()[1]
     logging.info("Save data in tmp file %s.", tmp_input_file)
     pbar = trange(len(text), unit="sentences")
     with open(tmp_input_file, "w") as f_inp:
         for _, line in zip(pbar, text):
-            print(line, file=f_inp)
+            print(" ".join(pretokenizer.tokenize(line)), file=f_inp)
 
     tmp_bpe_file = tempfile.mkstemp()[1]
 

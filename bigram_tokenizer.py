@@ -88,7 +88,8 @@ class BigramTokenizer(BaseTokenizer):
 def from_data(
         text: List[str],
         max_vocab: int = None,
-        max_lines: int = None) -> BigramTokenizer:
+        max_lines: int = None,
+        min_frequency: int = None) -> BigramTokenizer:
     """Create char-level tokenizer from data."""
     unigram_counter: typing.Counter[str] = Counter()
     bigram_counter: typing.Counter[str] = Counter()
@@ -105,6 +106,11 @@ def from_data(
         bigram_counter.update([
             sent[j] + sent[j + 1] for j in range(len(sent) -1)])
     pbar.close()
+
+    if min_frequency is not None:
+        vocab_counter = Counter({
+            key: count for key, count in vocab_counter.items()
+            if count > min_frequency})
 
     if max_vocab is None:
         vocab_list = list(unigram_counter.keys()) + list(bigram_counter.keys())
