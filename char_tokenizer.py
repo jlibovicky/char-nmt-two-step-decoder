@@ -104,6 +104,10 @@ def postprocess_idx_list(
 
 class CharTokenizer(BaseTokenizer):
     """Char-level tokenizer that roughly floows the Huggingface API."""
+    def __init__(self, tokens: List[str]) -> None:
+        super().__init__(tokens)
+
+        self.ctc_mode = False
 
     def batch_encode_plus(
             self,
@@ -142,6 +146,9 @@ class CharTokenizer(BaseTokenizer):
     def decode(
             self,
             token_ids: Union[int, List[int], np.ndarray, torch.Tensor]) -> str:
+        if not hasattr(self, "ctc_mode"):
+            self.ctc_mode = False
+
         if isinstance(token_ids, int):
             token_ids = [token_ids]
         if isinstance(token_ids, np.ndarray):
@@ -151,7 +158,7 @@ class CharTokenizer(BaseTokenizer):
 
         chars = []
         for i, char_id in enumerate(token_ids):
-            if i > 0 and char_id == token_ids[i - 1]:
+            if self.ctc_mode and i > 0 and char_id == token_ids[i - 1]:
                 continue
             if char_id in [self.bos_token_id, self.pad_token_id]:
                 continue

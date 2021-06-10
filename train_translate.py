@@ -291,8 +291,9 @@ def main():
 
             if steps % args.delay_update == args.delay_update - 1:
                 updates += 1
-                logging.info("Step %d, %d sent., loss %.4g",
-                             updates, sentences, loss.item())
+                if updates % 5 == 0:
+                    logging.info("Step %d, %d sent., loss %.4g",
+                                 updates, sentences, loss.item())
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
                 optimizer.step()
@@ -300,9 +301,9 @@ def main():
                 scheduler.step()
                 torch.cuda.empty_cache()
 
-                is_extra_validation = (
-                    (updates % (4 * args.validation_period))
-                        == 4 * args.validation_period - 1)
+                is_extra_validation = False# (
+                #    (updates % (4 * args.validation_period))
+                #        == 4 * args.validation_period - 1)
 
                 if is_extra_validation:
                     for name, param in model.named_parameters():

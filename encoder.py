@@ -62,6 +62,7 @@ class CharToPseudoWord(nn.Module):
             # pylint: disable=dangerous-default-value
             conv_filters: List[int] = DEFAULT_FILTERS,
             # pylint: enable=dangerous-default-value
+            intermediate_cnn_layers: int = 0,
             intermediate_dim: int = 512,
             highway_layers: int = 2,
             ff_layers: int = 2,
@@ -88,18 +89,28 @@ class CharToPseudoWord(nn.Module):
             self.cnn_output_dim = sum(conv_filters)
 
         self.after_cnn = nn.Sequential(
-            nn.ReLU(),
+            nn.Conv1d(self.cnn_output_dim, intermediate_dim, 1),
             nn.Dropout(dropout),
-            nn.MaxPool1d(
-                max_pool_window, max_pool_window,
-                padding=0, ceil_mode=True))
+            nn.ReLU())
+
+        self.intermediate_cnns = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(intermediate_dim, 2 * intermediate_dim, 3, padding=1),
+                nn.Dropout(dropout))
+            for _ in range(intermediate_cnn_layers)])
+        self.intermediate_cnn_norm = nn.ModuleList([
+            nn.LayerNorm(intermediate_dim)
+            for _ in range(intermediate_cnn_layers)])
+
+        self.shrink = nn.MaxPool1d(
+            max_pool_window, max_pool_window,
+            padding=0, ceil_mode=True)
 
         self.highways = nn.Sequential(
-            *(Highway(self.cnn_output_dim, dropout)
+            *(Highway(intermediate_dim, dropout)
               for _ in range(highway_layers)))
 
         self.after_highways = nn.Sequential(
-            nn.Linear(self.cnn_output_dim, intermediate_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.LayerNorm(intermediate_dim))
@@ -116,11 +127,12 @@ class CharToPseudoWord(nn.Module):
 
     def forward(self, embedded_chars: T, mask: T) -> Tuple[T, T]:
         embedded_chars = embedded_chars.transpose(2, 1)
+        conv_mask = mask.unsqueeze(1)
 
         if self.convolutions is not None:
             conv_outs = []
             for i, conv in enumerate(self.convolutions):
-                conv_i_out = conv(embedded_chars)
+                conv_i_out = conv(embedded_chars * conv_mask)
                 if self.is_decoder and i > 0:
                     conv_i_out = conv_i_out[:, :, :-2 * i]
                 conv_outs.append(conv_i_out)
@@ -129,7 +141,14 @@ class CharToPseudoWord(nn.Module):
         else:
             convolved_char = embedded_chars
 
-        shrinked = self.after_cnn(convolved_char)
+        convolved_char = self.after_cnn(convolved_char)
+        for cnn, norm in zip(self.intermediate_cnns,
+                             self.intermediate_cnn_norm):
+            conv_out = F.glu(cnn(convolved_char * conv_mask), dim=1)
+            convolved_char = norm(
+                (conv_out + convolved_char).transpose(2, 1)).transpose(2, 1)
+
+        shrinked = self.shrink(convolved_char)
         output = self.highways(shrinked).transpose(2, 1)
         output = self.after_highways(output)
         output = self.ff_layers(output)
@@ -146,6 +165,7 @@ class Encoder(nn.Module):
             # pylint: disable=dangerous-default-value
             conv_filters: List[int] = DEFAULT_FILTERS,
             # pylint: enable=dangerous-default-value
+            intermediate_cnn_layers: int = 0,
             dim: int = 512,
             shrink_factor: int = 5,
             highway_layers: int = 2,
@@ -168,6 +188,7 @@ class Encoder(nn.Module):
         self.char_encoder = CharToPseudoWord(
             char_embedding_dim, intermediate_dim=dim,
             conv_filters=conv_filters,
+            intermediate_cnn_layers=intermediate_cnn_layers,
             highway_layers=highway_layers,
             ff_layers=char_ff_layers,
             max_pool_window=shrink_factor,
