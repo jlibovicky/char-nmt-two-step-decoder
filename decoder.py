@@ -594,8 +594,8 @@ class VanillaDecoder(nn.Module):
             reordered_finished = flat_finished.index_select(
                 0, global_best_indices).reshape(batch_size, beam_size, -1)
             finished_now = (next_symbol_ids == eos_token_id)
-            #if reordered_finished.size(2) > 0:
-            #    finished_now += reordered_finished[:, :, -1]
+            if reordered_finished.size(2) > 0:
+                finished_now += reordered_finished[:, :, -1]
             finished = torch.cat((
                 reordered_finished,
                 finished_now.unsqueeze(-1)), dim=2)

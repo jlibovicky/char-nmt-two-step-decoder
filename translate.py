@@ -57,11 +57,16 @@ def main():
         vanilla_encoder=exp_args.get("vanilla_encoder"),
         vanilla_decoder=exp_args.get("vanilla_decoder"),
         share_char_repr=exp_args.get("share_char_repr")).to(device)
+    model.eval()
 
     logging.info("Load model parameters from file.")
+
+    ckpt_file = os.path.join(args.model_dir, "best_bleu.pt")
+    if not os.path.exists(ckpt_file):
+        ckpt_file = os.path.join(args.model_dir, "best_chrf.pt")
+
     state_dict = torch.load(
-        os.path.join(args.model_dir, "best_bleu.pt"),
-        map_location=device)
+        ckpt_file, map_location=device)
     model.load_state_dict(state_dict)
     logging.info("Translating.")
 
