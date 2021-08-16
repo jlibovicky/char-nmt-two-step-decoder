@@ -267,7 +267,11 @@ def main():
         "%d word vocabulary.",
         char_params, char_params // args.dim)
 
-    loss_function = SmoothCrossEntropyLoss(reduction="none")
+    if args.label_smoothing == 0.0:
+        loss_function = nn.CrossEntropyLoss(reduction="none")
+    else:
+        loss_function = SmoothCrossEntropyLoss(
+            reduction="none", smoothing=args.label_smoothing)
     optimizer = optim.Adam(model.parameters())
     scheduler = NoamLR(optimizer, args.warmup)
 
