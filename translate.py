@@ -30,11 +30,20 @@ def main():
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--len-norm", type=float, default=0.5)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--skip-pretokenization", action="store_true", default=False)
+    parser.add_argument(
+        "--force-char-segmentation", action="store_true", default=False)
     args = parser.parse_args()
 
     logging.info("Loading tokenizer.")
     tokenizer = joblib.load(
         os.path.join(args.model_dir, "tokenizer.joblib"))
+
+    if args.skip_pretokenization:
+        tokenizer.pretokenization = "skip"
+    if args.force_char_segmentation:
+        tokenizer.pretokenization = "char"
 
     with open(os.path.join(args.model_dir, "args")) as f_args:
         exp_args = yaml.load(f_args, Loader=yaml.FullLoader)
