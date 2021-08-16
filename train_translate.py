@@ -346,14 +346,16 @@ def main():
                         updates, epoch_n + 1, val_loss, val_bleu, val_chrf)
 
                     if val_chrf > best_chrf:
-                        logging.info("New best chrF, saving model.")
+                        logging.info(
+                            "New best chrF, saving model to '%s'.",
+                            experiment_dir)
                         best_chrf = val_chrf
                         cpu_save_state_dict(
                             model, experiment_dir, "best_chrf.pt")
                         stalled = 0
                     else:
                         stalled += 1
-                        logging.info("BLEU score stalled %d times.", stalled)
+                        logging.info("chrF score stalled %d times.", stalled)
                     cpu_save_state_dict(
                         model, experiment_dir, "last_checkpoint.pt")
                     torch.save(
