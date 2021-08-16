@@ -172,7 +172,7 @@ def from_data(
         text: List[str],
         max_vocab: int = None,
         max_lines: int = None,
-        min_frequency: int = None) -> CharTokenizer:
+        min_frequency: int = None, **kwargs) -> CharTokenizer:
     """Create char-level tokenizer from data."""
 
     vocab_counter: typing.Counter[str] = Counter()
