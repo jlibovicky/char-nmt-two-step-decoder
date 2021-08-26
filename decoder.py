@@ -223,7 +223,8 @@ class Decoder(nn.Module):
             encoder_states: T,
             encoder_mask: T,
             eos_token_id: int,
-            max_len: int = 300) -> Tuple[T, T]:
+            max_len: int = 300,
+            sample: bool = False) -> Tuple[T, T]:
         batch_size = encoder_states.size(0)
         step_size = self.char_encoder.max_pool_window
 
@@ -262,9 +263,14 @@ class Decoder(nn.Module):
                         (embeded_prev, char_states[:, i:i+1]), dim=2)
                     rnn_output, rnn_state = self.char_decoder_rnn(
                         rnn_input, rnn_state)
-                    next_chars = self.output_proj(
+                    out_logits = self.output_proj(
                         torch.cat(
-                            [rnn_output, char_states[:, i:i+1]], dim=2)).argmax(2)
+                            [rnn_output, char_states[:, i:i+1]], dim=2))
+                    if sample:
+                        out_dist = F.softmax(out_logits, dim=2)
+                        next_chars = torch.multinomial(out_dist.squeeze(1), 1)
+                    else:
+                        next_chars = out_logits.argmax(2)
                     new_chars.append(next_chars)
                     finished = finished + (next_chars == eos_token_id)
 
@@ -286,6 +292,7 @@ class Decoder(nn.Module):
             eos_token_id: int,
             beam_size: int,
             len_norm: float,
+            sample: bool = False,
             max_len: int = 300) -> Tuple[T, T]:
         device = encoder_states.device
         batch_size = encoder_states.size(0)
@@ -504,6 +511,7 @@ class VanillaDecoder(nn.Module):
             encoder_states: T,
             encoder_mask: T,
             eos_token_id: int,
+            sample: bool = False,
             max_len: int = 200) -> Tuple[T, T]:
         batch_size = encoder_states.size(0)
 
@@ -523,7 +531,12 @@ class VanillaDecoder(nn.Module):
                 for_training=False)
             last_state = states[:, -1]
 
-            new_char = self.output_proj(last_state).argmax(1, keepdim=True)
+            out_logits = self.output_proj(last_state)
+            if sample:
+                out_dist = F.softmax(out_logits, dim=1)
+                new_char = torch.multinomial(out_dist, 1)
+            else:
+                new_char = out_logits.argmax(1, keepdim=True)
             finished = finished + (new_char == eos_token_id)
 
             decoded = torch.cat((decoded, new_char), dim=1)

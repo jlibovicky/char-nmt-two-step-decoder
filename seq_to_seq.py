@@ -140,6 +140,20 @@ class Seq2SeqModel(nn.Module):
         return decoded, mask
 
     @torch.no_grad()
+    def sample(
+            self, src_batch: T, input_mask: T,
+            n_samples: int,
+            eos_token_id: int, max_len: int = 400) -> List[Tuple[T, T]]:
+
+        encoder_states, encoded_mask, _ = self.encoder(src_batch, input_mask)
+        return [
+            self.decoder.greedy_decode(
+                encoder_states, encoded_mask, eos_token_id,
+                max_len=max_len,
+                sample=True)
+            for _ in range(n_samples)]
+
+    @torch.no_grad()
     def beam_search(
             self, src_batch: T, input_mask: T,
             eos_token_id: int,

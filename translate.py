@@ -13,12 +13,28 @@ import yaml
 import torch
 
 from seq_to_seq import Seq2SeqModel
+from char_tokenizer import BaseTokenizer
+from custom_chrf import pairwise_chrf
 
 
 T = torch.Tensor
 
 
 logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
+
+
+def mbr_decode(
+        ids_list: List[Tuple[T, T]],
+        tgt_tokenizer: BaseTokenizer) -> List[str]:
+    sentences_transposed = [
+        tgt_tokenizer.batch_decode(ids) for ids, _ in ids_list]
+    candidate_list = list(map(list, zip(*sentences_transposed)))
+    decoded = []
+    for candidates in candidate_list:
+        scores = pairwise_chrf(candidates).sum(1).tolist()
+        decoded.append(
+            max(zip(candidates, scores), key=lambda p: p[1])[0])
+    return decoded
 
 
 def main():
@@ -35,6 +51,8 @@ def main():
         "--skip-pretokenization", action="store_true", default=False)
     parser.add_argument(
         "--force-char-segmentation", action="store_true", default=False)
+    parser.add_argument(
+        "--mbr-decoding", default=False, action="store_true")
     args = parser.parse_args()
 
     logging.info("Loading tokenizer.")
@@ -91,6 +109,14 @@ def main():
 
     def decode_batch(input_batch):
         src_data, src_mask = src_tokenizer.batch_encode_plus(input_batch)
+        if args.mbr_decoding:
+            decoded_ids = model.sample(
+                src_data.to(device), src_mask.to(device),
+                args.beam_size,
+                tgt_tokenizer.eos_token_id)
+            for output in mbr_decode(decoded_ids, tgt_tokenizer):
+                print(output)
+            return
 
         if args.beam_size == 1:
             decoded_ids = model.greedy_decode(
