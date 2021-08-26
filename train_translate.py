@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from char_tokenizer import BaseTokenizer
 from data import preprocess_data
 from experiment import experiment_logging, get_timestamp
 from seq_to_seq import Seq2SeqModel
@@ -44,8 +45,13 @@ def length_ratio(hyps: List[str], refs: List[str]) -> float:
 
 
 @torch.no_grad()
-def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
-             loss_function, device, tokenizer, tb_writer,
+def validate(model: Seq2SeqModel,
+             batches: List[Tuple[T, T]],
+             loss_function,
+             device,
+             src_tokenizer: BaseTokenizer,
+             tgt_tokenizer: BaseTokenizer,
+             tb_writer,
              updates: int, sentences: int, log_details: bool):
     max_val_len = int(1.2 * max(b[1][0].size(1) for b in batches))
     model.eval()
@@ -63,11 +69,11 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
         details_list.append(details)
         loss_sum += loss
         decoded_ids = model.greedy_decode(
-            src_data, src_mask, tokenizer.eos_token_id,
+            src_data, src_mask, tgt_tokenizer.eos_token_id,
             max_len=max_val_len)[0]
-        source_sentences.extend(tokenizer.batch_decode(src_data))
-        decoded_sentences.extend(tokenizer.batch_decode(decoded_ids))
-        target_sentences.extend(tokenizer.batch_decode(tgt_data))
+        source_sentences.extend(src_tokenizer.batch_decode(src_data))
+        decoded_sentences.extend(tgt_tokenizer.batch_decode(decoded_ids))
+        target_sentences.extend(tgt_tokenizer.batch_decode(tgt_data))
 
         if i == 0:
             for hyp, ref in zip(decoded_sentences[:5], target_sentences):
@@ -114,12 +120,12 @@ def validate(model: Seq2SeqModel, batches: List[Tuple[T, T]],
             "details/output_entropy", output_entropy, global_step=updates)
         tb_writer.add_embedding(
             model.encoder.embeddings.weight,
-            metadata=tokenizer.idx_to_str,
+            metadata=src_tokenizer.idx_to_str,
             global_step=updates,
             tag="Encoder embeddings")
         tb_writer.add_embedding(
-            model.decoder.embeddings.weight[:len(tokenizer.idx_to_str)],
-            metadata=tokenizer.idx_to_str,
+            model.decoder.embeddings.weight[:len(tgt_tokenizer.idx_to_str)],
+            metadata=tgt_tokenizer.idx_to_str,
             global_step=updates,
             tag="Decoder embeddings")
         encoder_self_att_entropies = [
@@ -166,8 +172,12 @@ def main():
         "--skip-pretokenization", action="store_true", default=False)
     parser.add_argument(
         "--force-char-segmentation", action="store_true", default=False)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument(
+        "--tgt-tokenizer", type=str,
+        help="File with saved tokenizer for the target language, "
+             "if it differes from source.")
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--patience", type=int, default=6)
     parser.add_argument("--char-emb-dim", type=int, default=64)
     parser.add_argument("--dim", type=int, default=512)
     parser.add_argument("--layers", type=int, default=6)
@@ -199,6 +209,10 @@ def main():
              "datasets are taken from args.")
     args = parser.parse_args()
 
+    if args.share_char_repr and args.tgt_tokenizer:
+        raise ValueError(
+            "Cannot use different src and tgt tokenizers and share embeddings.")
+
     if args.continue_training is not None:
         logging.info("Loading hyper-parameters from the previous experiement.")
         with open(os.path.join(args.continue_training, "args")) as f_args:
@@ -218,36 +232,54 @@ def main():
         args.share_char_repr = previous_args["share_char_repr"]
 
         logging.info("Loading tokenizer from the previous experiement.")
-        tokenizer = joblib.load(
+        src_tokenizer = joblib.load(
             os.path.join(args.continue_training, "tokenizer.joblib"))
+        tgt_tokenizer_path = os.path.join(
+            args.continue_training, "tgt_tokenizer.joblib")
+        if os.path.exists(tgt_tokenizer_path):
+            tgt_tokenizer = joblib.load(tgt_tokenizer_path)
+        else:
+            tgt_tokenizer = src_tokenizer
     else:
         logging.info("Loading tokenizer from '%s'.", args.tokenizer)
-        tokenizer = joblib.load(args.tokenizer)
+        src_tokenizer = joblib.load(args.tokenizer)
+        if args.tgt_tokenizer is not None:
+            tgt_tokenizer = joblib.load(args.tgt_tokenizer)
+        else:
+            tgt_tokenizer = src_tokenizer
 
     if args.skip_pretokenization:
-        tokenizer.pretokenization = "skip"
+        src_tokenizer.pretokenization = "skip"
+        tgt_tokenizer.pretokenization = "skip"
     if args.force_char_segmentation:
-        tokenizer.pretokenization = "char"
+        src_tokenizer.pretokenization = "char"
+        tgt_tokenizer.pretokenization = "char"
 
     experiment_dir = experiment_logging(
         "experiments", f"{args.name}_{get_timestamp()}", args)
     shutil.copyfile(
         args.tokenizer, os.path.join(experiment_dir, "tokenizer.joblib"))
+    if args.tgt_tokenizer is not None:
+        shutil.copyfile(
+            args.tgt_tokenizer,
+            os.path.join(experiment_dir, "tgt_tokenizer.joblib"))
+
     tb_writer = SummaryWriter(experiment_dir)
 
     logging.info("Load and binarize data.")
     train_batches = preprocess_data(
-        tokenizer, args.train_src, args.train_tgt,
+        src_tokenizer, tgt_tokenizer, args.train_src, args.train_tgt,
         args.batch_size, sort_by_length=True)
     random.shuffle(train_batches)
     val_batches = preprocess_data(
-        tokenizer, args.val_src, args.val_tgt,
+        src_tokenizer, tgt_tokenizer, args.val_src, args.val_tgt,
         args.batch_size, sort_by_length=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info("Initializing model on device %s.", device)
     model = Seq2SeqModel(
-        tokenizer.vocab_size,
+        (src_tokenizer.vocab_size if args.tgt_tokenizer is None else
+         (src_tokenizer.vocab_size, tgt_tokenizer.vocab_size)),
         conv_filters=args.convolutions,
         char_embedding_dim=args.char_emb_dim,
         dim=args.dim,
@@ -326,7 +358,8 @@ def main():
                 if (updates % args.validation_period ==
                         args.validation_period - 1):
                     val_loss, val_bleu, val_chrf, val_samples = validate(
-                        model, val_batches, loss_function, device, tokenizer,
+                        model, val_batches, loss_function, device,
+                        src_tokenizer, tgt_tokenizer,
                         tb_writer, updates, sentences, is_extra_validation)
 
                     tb_writer.add_scalar(

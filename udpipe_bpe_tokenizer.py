@@ -112,7 +112,7 @@ def pretokenize(model, sentences):
         return tokenized
     if model == "char":
         for sent in sentences:
-            tokenized.append(list(sent))
+            tokenized.append(list("▁" + sent.replace(" ", "▁")))
         return tokenized
 
     pbar = trange(len(sentences), unit="sentences")

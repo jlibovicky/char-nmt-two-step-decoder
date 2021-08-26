@@ -12,24 +12,28 @@ T = torch.Tensor
 
 
 def preprocess_data(
-        tokenizer: BaseTokenizer,
+        src_tokenizer: BaseTokenizer,
+        tgt_tokenizer: BaseTokenizer,
         train_src: IO[str],
         train_tgt: IO[str],
         batch_size: int,
         sort_by_length: bool) -> List[Tuple[Tuple[T, T], Tuple[T, T]]]:
+
     logging.info("Loading file '%s'.", train_src.name)
     src_text = [line.strip() for line in train_src]
     logging.info("Loading file '%s'.", train_tgt.name)
     tgt_text = [line.strip() for line in train_tgt]
 
-    binarized = _binarize_data(tokenizer, src_text, tgt_text, sort_by_length)
-    batched = _batch_data(binarized, batch_size, tokenizer.pad_token_id)
+    binarized = _binarize_data(
+        src_tokenizer, tgt_tokenizer, src_text, tgt_text, sort_by_length)
+    batched = _batch_data(binarized, batch_size, src_tokenizer.pad_token_id)
 
     return batched
 
 
 def _binarize_data(
-        tokenizer: BaseTokenizer,
+        src_tokenizer: BaseTokenizer,
+        tgt_tokenizer: BaseTokenizer,
         src_text: List[str], tgt_text: List[str],
         sort_by_length: bool) -> List[Tuple[T, T]]:
     logging.info("Binarizing data.")
@@ -46,9 +50,9 @@ def _binarize_data(
             continue
 
         binarized.append(( # type: ignore
-            tokenizer.batch_encode_plus(
+            src_tokenizer.batch_encode_plus(
                 [src], return_attention_mask=False)[0],
-            tokenizer.batch_encode_plus(
+            tgt_tokenizer.batch_encode_plus(
                 [tgt], return_attention_mask=False)[0]))
 
     logging.info(
@@ -89,8 +93,8 @@ def _batch_data(
                 "Single instance is longer than maximum batch size.")
         future_max_src_len = max(max_cur_src_len, src.size(0))
         future_max_tgt_len = max(max_cur_tgt_len, tgt.size(0))
-        if ((len(src_batch) * future_max_src_len > max_size) or
-            (len(tgt_batch) * future_max_tgt_len > max_size)):
+        if ((len(src_batch) * future_max_src_len >= max_size) or
+            (len(tgt_batch) * future_max_tgt_len >= max_size)):
             process_batch()
             src_batch, tgt_batch = [], []
             max_cur_src_len = 0

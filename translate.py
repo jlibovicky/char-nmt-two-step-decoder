@@ -2,6 +2,7 @@
 
 """Translated using a trained model."""
 
+from typing import List, Tuple
 import argparse
 import logging
 import os
@@ -37,13 +38,21 @@ def main():
     args = parser.parse_args()
 
     logging.info("Loading tokenizer.")
-    tokenizer = joblib.load(
+    src_tokenizer = joblib.load(
         os.path.join(args.model_dir, "tokenizer.joblib"))
+    tgt_tokenizer_path = os.path.join(
+        args.model_dir, "tgt_tokenizer.joblib")
+    if os.path.exists(tgt_tokenizer_path):
+        tgt_tokenizer = joblib.load(tgt_tokenizer_path)
+    else:
+        tgt_tokenizer = src_tokenizer
 
     if args.skip_pretokenization:
-        tokenizer.pretokenization = "skip"
+        src_tokenizer.pretokenization = "skip"
+        tgt_tokenizer.pretokenization = "skip"
     if args.force_char_segmentation:
-        tokenizer.pretokenization = "char"
+        src_tokenizer.pretokenization = "char"
+        tgt_tokenizer.pretokenization = "char"
 
     with open(os.path.join(args.model_dir, "args")) as f_args:
         exp_args = yaml.load(f_args, Loader=yaml.FullLoader)
@@ -51,7 +60,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info("Initializing model on device %s.", device)
     model = Seq2SeqModel(
-        tokenizer.vocab_size,
+        (src_tokenizer.vocab_size if src_tokenizer == tgt_tokenizer else
+         (src_tokenizer.vocab_size, tgt_tokenizer.vocab_size)),
         conv_filters=exp_args.get("convolutions"),
         char_embedding_dim=exp_args.get("char_emb_dim"),
         dim=exp_args.get("dim"),
@@ -80,23 +90,24 @@ def main():
     logging.info("Translating.")
 
     def decode_batch(input_batch):
-        src_data, src_mask = tokenizer.batch_encode_plus(input_batch)
+        src_data, src_mask = src_tokenizer.batch_encode_plus(input_batch)
+
         if args.beam_size == 1:
             decoded_ids = model.greedy_decode(
                 src_data.to(device), src_mask.to(device),
-                tokenizer.eos_token_id)[0]
+                tgt_tokenizer.eos_token_id)[0]
         else:
             decoded_ids = model.beam_search(
                 src_data.to(device), src_mask.to(device),
-                tokenizer.eos_token_id,
+                tgt_tokenizer.eos_token_id,
                 beam_size=args.beam_size, len_norm=args.len_norm)[0]
-        for output in tokenizer.batch_decode(decoded_ids):
+        for output in tgt_tokenizer.batch_decode(decoded_ids):
             print(output)
 
     current_batch = []
     for line in args.input:
         current_batch.append(line.strip())
-        if len(current_batch) > args.batch_size:
+        if len(current_batch) >= args.batch_size:
             decode_batch(current_batch)
             current_batch = []
     if current_batch:

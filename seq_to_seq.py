@@ -32,7 +32,7 @@ def compute_attention_entropy(
 
 class Seq2SeqModel(nn.Module):
     def __init__(
-            self, vocab_size: int,
+            self, vocab_size: Union[int, Tuple[int, int]],
             conv_filters: List[int],
             nar_output: bool = False,
             char_embedding_dim: int = 128,
@@ -51,9 +51,14 @@ class Seq2SeqModel(nn.Module):
 
         self.layers = layers
 
+        if isinstance(vocab_size, tuple):
+            src_vocab_size, tgt_vocab_size = vocab_size
+        else:
+            src_vocab_size, tgt_vocab_size = vocab_size, vocab_size
+
         if vanilla_encoder:
             self.encoder: Union[Encoder, VanillaEncoder] = VanillaEncoder(
-                char_vocabulary_size=vocab_size,
+                char_vocabulary_size=src_vocab_size,
                 dim=dim,
                 layers=layers,
                 ff_dim=ff_dim,
@@ -61,7 +66,7 @@ class Seq2SeqModel(nn.Module):
                 dropout=dropout)
         else:
             self.encoder = Encoder(
-                vocab_size=vocab_size,
+                vocab_size=src_vocab_size,
                 char_embedding_dim=char_embedding_dim,
                 conv_filters=conv_filters,
                 dim=dim,
@@ -75,7 +80,7 @@ class Seq2SeqModel(nn.Module):
 
         if vanilla_decoder:
             self.decoder: Union[Decoder, VanillaDecoder] = VanillaDecoder(
-                char_vocabulary_size=vocab_size,
+                char_vocabulary_size=tgt_vocab_size,
                 dim=dim,
                 layers=layers,
                 ff_dim=ff_dim,
@@ -85,7 +90,7 @@ class Seq2SeqModel(nn.Module):
                     share_char_repr and vanilla_encoder) else None)
         else:
             self.decoder = Decoder(
-                char_vocabulary_size=vocab_size,
+                char_vocabulary_size=tgt_vocab_size,
                 char_embedding_dim=char_embedding_dim,
                 conv_filters=conv_filters,
                 nar_output=nar_output,
