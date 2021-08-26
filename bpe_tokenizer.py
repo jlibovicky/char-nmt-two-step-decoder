@@ -79,8 +79,12 @@ class BPETokenizer(BaseTokenizer):
             assert len(token_ids.shape) == 1
             token_ids = token_ids.cpu().numpy()
 
+        token_id_list = token_ids.tolist()
+        if self.eos_token_id in token_id_list:
+            token_id_list = token_id_list[
+                :token_id_list.index(self.eos_token_id)]
         decoded = self.tokenizer.decode(
-            token_ids.tolist(), ignore_ids=[0, 1, 2, 3])[0]
+            token_id_list, ignore_ids=[0, 1, 2, 3])[0]
         return self.detokenizer.detokenize(decoded.split(" "))
 
 
