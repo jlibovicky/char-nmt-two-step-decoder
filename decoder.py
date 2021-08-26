@@ -1,10 +1,12 @@
 from typing import Any, Dict, List, Optional, Tuple
 
+from charformer_pytorch import GBST
 import torch
 from torch import nn
 from torch.functional import F
 from transformers.modeling_bert import BertConfig, BertModel
 
+from canine import CanineEncoder
 from encoder import CharToPseudoWord, Encoder, VanillaEncoder
 
 T = torch.Tensor
@@ -20,6 +22,7 @@ class Decoder(nn.Module):
             dim: int,
             nar_output: bool = False,
             shrink_factor: int = 5,
+            charformer_block_size: int = 5,
             highway_layers: int = 2,
             char_ff_layers: int = 2,
             layers: int = 6,
@@ -27,7 +30,8 @@ class Decoder(nn.Module):
             attention_heads: int = 8,
             dropout: float = 0.1,
             max_length: int = 600,
-            encoder: Encoder = None) -> None:
+            encoder: Encoder = None,
+            char_process_type: str = "conv") -> None:
         super().__init__()
 
         self.dim = dim
@@ -37,24 +41,46 @@ class Decoder(nn.Module):
         self.shrink_factor = shrink_factor
         self.nar_output = nar_output
         self.char_embedding_dim = char_embedding_dim
+        self.char_process_type = char_process_type
 
         if encoder is not None:
             self.char_embeddings: nn.Module = encoder.embeddings
             self.pre_pos_emb = encoder.pre_pos_emb
             self.char_encoder = encoder.char_encoder
         else:
-            self.char_embeddings = nn.Sequential(
-                nn.Embedding(char_vocabulary_size, char_embedding_dim),
-                nn.Dropout(dropout))
-            self.pre_pos_emb = nn.Parameter(
-                torch.randn(1, max_length, char_embedding_dim))
-            self.char_encoder = CharToPseudoWord(
-                char_embedding_dim, intermediate_dim=dim,
-                conv_filters=conv_filters,
-                max_pool_window=shrink_factor,
-                highway_layers=highway_layers,
-                ff_layers=char_ff_layers,
-                is_decoder=True)
+            if char_process_type == "conv":
+                self.char_embeddings = nn.Sequential(
+                    nn.Embedding(char_vocabulary_size, char_embedding_dim),
+                    nn.Dropout(dropout))
+                self.pre_pos_emb = nn.Parameter(
+                    torch.randn(1, max_length, char_embedding_dim))
+                self.char_encoder = CharToPseudoWord(
+                    char_embedding_dim, intermediate_dim=dim,
+                    conv_filters=conv_filters,
+                    max_pool_window=shrink_factor,
+                    highway_layers=highway_layers,
+                    ff_layers=char_ff_layers,
+                    is_decoder=True)
+            elif char_process_type == "charformer":
+                self.char_encoder = GBST(
+                    num_tokens=char_vocabulary_size,
+                    dim=dim,
+                    max_block_size=charformer_block_size,
+                    downsample_factor=shrink_factor,
+                    score_consensus_attn=True)
+            elif char_process_type == "canine":
+                self.embeddings = nn.Embedding(char_vocabulary_size, dim)
+                self.char_encoder = CanineEncoder(
+                    hidden_size=dim,
+                    num_attention_heads=attention_heads,
+                    dropout=dropout,
+                    shrink_factor=shrink_factor,
+                    attend_from_chunk_width=shrink_factor,
+                    attend_to_chunk_width=shrink_factor,
+                    attend_from_chunk_stride=shrink_factor,
+                    attend_to_chunk_stride=shrink_factor)
+            else:
+                raise ValueError()
 
         config = BertConfig(
             vocab_size=dim,
@@ -81,10 +107,13 @@ class Decoder(nn.Module):
 
         if not self.nar_output:
             self.char_decoder_rnn = nn.LSTM(
-                2 * char_embedding_dim, 2 * char_embedding_dim, batch_first=True)
-            self.output_proj = nn.Linear(3 * char_embedding_dim, char_vocabulary_size)
+                2 * char_embedding_dim,
+                2 * char_embedding_dim, batch_first=True)
+            self.output_proj = nn.Linear(
+                3 * char_embedding_dim, char_vocabulary_size)
         else:
-            self.output_proj = nn.Linear(char_embedding_dim, char_vocabulary_size)
+            self.output_proj = nn.Linear(
+                char_embedding_dim, char_vocabulary_size)
 
         #self.output_proj = nn.Sequential(
         #    nn.Linear(char_embedding_dim, 2 * char_embedding_dim),
@@ -120,10 +149,17 @@ class Decoder(nn.Module):
         dec_input = torch.cat([to_prepend, target_ids], dim=1)
         input_mask = torch.cat([to_prepend, target_mask], dim=1)
 
-        decoder_embeddings, shrinked_mask = self.char_encoder(
-            (self.char_embeddings(dec_input) +
-                self.pre_pos_emb[:, :dec_input.size(1)]),
-            input_mask)
+        if self.char_process_type in ["conv", "canine"]:
+            decoder_embeddings, shrinked_mask = self.char_encoder(
+                (self.char_embeddings(dec_input) +
+                    self.pre_pos_emb[:, :dec_input.size(1)]),
+                input_mask)
+        elif self.char_process_type == "charformer":
+            decoder_embeddings, shrinked_mask_bool = self.char_encoder(
+                dec_input, input_mask.bool())
+            shrinked_mask = shrinked_mask_bool.float()
+        else:
+            raise ValueError(f"Invalid char_process_type '{self.char_process_type}'")
 
         decoder_states, _, self_att, encdec_att = self.transformer(
             input_ids=None,

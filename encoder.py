@@ -1,9 +1,12 @@
 from typing import List, Tuple
 
+from charformer_pytorch import GBST
 import torch
 from torch import nn
 import torch.nn.functional as F
 from transformers.modeling_bert import BertConfig, BertModel # type: ignore
+
+from canine import CanineEncoder
 
 T = torch.Tensor
 
@@ -32,7 +35,6 @@ class Highway(nn.Module):
 
 class TransformerFeedForward(nn.Module):
     """Feedforward sublayer from the Transformer."""
-
     def __init__(
             self, input_size: int,
             intermediate_size: int, dropout: float) -> None:
@@ -95,7 +97,8 @@ class CharToPseudoWord(nn.Module):
 
         self.intermediate_cnns = nn.ModuleList([
             nn.Sequential(
-                nn.Conv1d(intermediate_dim, 2 * intermediate_dim, 3, padding=1),
+                nn.Conv1d(
+                    intermediate_dim, 2 * intermediate_dim, 3, padding=1),
                 nn.Dropout(dropout))
             for _ in range(intermediate_cnn_layers)])
         self.intermediate_cnn_norm = nn.ModuleList([
@@ -123,7 +126,6 @@ class CharToPseudoWord(nn.Module):
         self.final_mask_shrink = nn.MaxPool1d(
             max_pool_window, max_pool_window, padding=0, ceil_mode=True)
     # pylint: enable=too-many-arguments
-
 
     def forward(self, embedded_chars: T, mask: T) -> Tuple[T, T]:
         embedded_chars = embedded_chars.transpose(2, 1)
@@ -175,25 +177,51 @@ class Encoder(nn.Module):
             attention_heads: int = 8,
             dropout: float = 0.1,
             max_length: int = 600,
-            decoder_style_padding: bool = False) -> None:
+            decoder_style_padding: bool = False,
+            charformer_block_size: int = 5,
+            char_process_type: str = "conv") -> None:
         super().__init__()
 
         self.dim = dim
         self.ff_dim = ff_dim if ff_dim is not None else 2 * dim
         self.layers = layers
+        self.char_process_type = char_process_type
 
-        self.embeddings = nn.Embedding(vocab_size, char_embedding_dim)
-        self.pre_pos_emb = nn.Parameter(
-            torch.randn(1, max_length, char_embedding_dim))
-        self.char_encoder = CharToPseudoWord(
-            char_embedding_dim, intermediate_dim=dim,
-            conv_filters=conv_filters,
-            intermediate_cnn_layers=intermediate_cnn_layers,
-            highway_layers=highway_layers,
-            ff_layers=char_ff_layers,
-            max_pool_window=shrink_factor,
-            dropout=dropout,
-            is_decoder=decoder_style_padding)
+        if char_process_type == "conv":
+            self.embeddings = nn.Embedding(vocab_size, char_embedding_dim)
+            self.pre_pos_emb = nn.Parameter(
+                torch.randn(1, max_length, char_embedding_dim))
+            self.char_encoder = CharToPseudoWord(
+                char_embedding_dim, intermediate_dim=dim,
+                conv_filters=conv_filters,
+                intermediate_cnn_layers=intermediate_cnn_layers,
+                highway_layers=highway_layers,
+                ff_layers=char_ff_layers,
+                max_pool_window=shrink_factor,
+                dropout=dropout,
+                is_decoder=decoder_style_padding)
+        elif char_process_type == "charformer":
+            self.char_encoder = GBST(
+                num_tokens=vocab_size,
+                dim=dim,
+                max_block_size=charformer_block_size,
+                downsample_factor=shrink_factor,
+                score_consensus_attn=True)
+        elif char_process_type == "canine":
+            self.embeddings = nn.Embedding(vocab_size, dim)
+            self.char_encoder = CanineEncoder(
+                hidden_size=dim,
+                num_attention_heads=attention_heads,
+                dropout=dropout,
+                shrink_factor=shrink_factor,
+                attend_from_chunk_width=4 * shrink_factor,
+                attend_to_chunk_width=4 * shrink_factor,
+                attend_from_chunk_stride=4 * shrink_factor,
+                attend_to_chunk_stride=4 * shrink_factor)
+        else:
+            raise ValueError(
+                f"Unknown char processing type: '{char_process_type}'.")
+
         config = BertConfig(
             vocab_size=vocab_size,
             is_decoder=False,
@@ -209,9 +237,16 @@ class Encoder(nn.Module):
     # pylint: enable=too-many-arguments
 
     def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T, T]:
-        encoded, enc_mask = self.char_encoder(
-            self.embeddings(data),# + self.pre_pos_emb[:, :data.size(1)],
-            mask)
+        if self.char_process_type in ["conv", "canine"]:
+            encoded, enc_mask = self.char_encoder(
+                self.embeddings(data),# + self.pre_pos_emb[:, :data.size(1)],
+                mask)
+        elif self.char_process_type == "charformer":
+            encoded, enc_mask = self.char_encoder(data, mask.bool())
+            enc_mask = enc_mask.float()
+        else:
+            raise ValueError(
+                f"Unknown char processing type: '{self.char_process_type}'.")
 
         transformed, _, attentions = self.transformer(
             input_ids=None,

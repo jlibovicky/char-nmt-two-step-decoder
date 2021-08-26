@@ -5,3 +5,4 @@ sacrebleu
 pyyaml
 tensorboardX
 youtokentome
+charformer-pytorch

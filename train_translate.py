@@ -181,7 +181,11 @@ def main():
     parser.add_argument("--char-emb-dim", type=int, default=64)
     parser.add_argument("--dim", type=int, default=512)
     parser.add_argument("--layers", type=int, default=6)
+    parser.add_argument(
+        "--char-process-type", type=str, choices=["conv", "charformer", "canine"],
+        default="conv")
     parser.add_argument("--shrink-factor", type=int, default=5)
+    parser.add_argument("--charformer-block-size", type=int, default=5)
     parser.add_argument("--nar-output", default=False, action="store_true")
     parser.add_argument("--attention-heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -230,6 +234,10 @@ def main():
         args.vanilla_encoder = previous_args["vanilla_encoder"]
         args.vanilla_decoder = previous_args["vanilla_decoder"]
         args.share_char_repr = previous_args["share_char_repr"]
+        args.charformer_block_size = previous_args.get(
+            "charformer_block_size", args.charformer_block_size)
+        args.char_process_type = previous_args.get(
+            "char_process_type", args.char_process_type)
 
         logging.info("Loading tokenizer from the previous experiement.")
         src_tokenizer = joblib.load(
@@ -284,6 +292,7 @@ def main():
         char_embedding_dim=args.char_emb_dim,
         dim=args.dim,
         shrink_factor=args.shrink_factor,
+        charformer_block_size=args.charformer_block_size,
         nar_output=args.nar_output,
         highway_layers=args.highway_layers,
         char_ff_layers=args.char_ff_layers,
@@ -293,7 +302,8 @@ def main():
         dropout=args.dropout,
         vanilla_encoder=args.vanilla_encoder,
         vanilla_decoder=args.vanilla_decoder,
-        share_char_repr=args.share_char_repr).to(device)
+        share_char_repr=args.share_char_repr,
+        char_process_type=args.char_process_type).to(device)
 
     if args.continue_training is not None:
         logging.info("Load model paramters from file.")

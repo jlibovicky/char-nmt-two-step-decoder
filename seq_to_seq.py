@@ -38,12 +38,14 @@ class Seq2SeqModel(nn.Module):
             char_embedding_dim: int = 128,
             dim: int = 512,
             shrink_factor: int = 5,
+            charformer_block_size: int = 5,
             highway_layers: int = 2,
             char_ff_layers: int = 2,
             ff_dim: int = None,
             layers: int = 6,
             attention_heads: int = 8,
             dropout: float = 0.1,
+            char_process_type: str = "conv",
             vanilla_encoder: bool = False,
             vanilla_decoder: bool = False,
             share_char_repr: bool = False) -> None:
@@ -71,12 +73,14 @@ class Seq2SeqModel(nn.Module):
                 conv_filters=conv_filters,
                 dim=dim,
                 shrink_factor=shrink_factor,
+                charformer_block_size=charformer_block_size,
                 highway_layers=highway_layers,
                 char_ff_layers=char_ff_layers,
                 ff_dim=ff_dim, layers=layers,
                 attention_heads=attention_heads,
                 dropout=dropout,
-                decoder_style_padding=share_char_repr)
+                decoder_style_padding=share_char_repr,
+                char_process_type=char_process_type)
 
         if vanilla_decoder:
             self.decoder: Union[Decoder, VanillaDecoder] = VanillaDecoder(
@@ -171,7 +175,9 @@ class Seq2SeqModel(nn.Module):
     def char_level_param_count(self) -> int:
         """Number of parameters in character processing layers."""
 
-        relevant_parts = [self.encoder.embeddings]
+        relevant_parts = []
+        if hasattr(self.encoder, "embeddings"):
+            relevant_parts = [self.encoder.embeddings]
 
         if isinstance(self.encoder, Encoder):
             relevant_parts.append(self.encoder.char_encoder)
