@@ -190,7 +190,7 @@ class Encoder(nn.Module):
         if char_process_type == "conv":
             self.embeddings = nn.Embedding(vocab_size, char_embedding_dim)
             self.pre_pos_emb = nn.Parameter(
-                torch.randn(1, max_length, char_embedding_dim))
+                torch.randn(1, max_length, vocab_size))
             self.char_encoder = CharToPseudoWord(
                 char_embedding_dim, intermediate_dim=dim,
                 conv_filters=conv_filters,
@@ -209,6 +209,8 @@ class Encoder(nn.Module):
                 score_consensus_attn=True)
         elif char_process_type == "canine":
             self.embeddings = nn.Embedding(vocab_size, dim)
+            self.pre_pos_emb = nn.Parameter(
+                torch.randn(1, max_length, dim))
             self.char_encoder = CanineEncoder(
                 hidden_size=dim,
                 num_attention_heads=attention_heads,
@@ -237,9 +239,13 @@ class Encoder(nn.Module):
     # pylint: enable=too-many-arguments
 
     def forward(self, data: torch.LongTensor, mask: T) -> Tuple[T, T, T]:
-        if self.char_process_type in ["conv", "canine"]:
+        if self.char_process_type == "conv":
             encoded, enc_mask = self.char_encoder(
                 self.embeddings(data),# + self.pre_pos_emb[:, :data.size(1)],
+                mask)
+        elif self.char_process_type == "canine":
+            encoded, enc_mask = self.char_encoder(
+                self.embeddings(data) + self.pre_pos_emb[:, :data.size(1)],
                 mask)
         elif self.char_process_type == "charformer":
             encoded, enc_mask = self.char_encoder(data, mask.bool())
