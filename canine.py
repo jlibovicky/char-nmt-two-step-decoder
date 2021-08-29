@@ -304,8 +304,7 @@ class CharactersToMolecules(nn.Module):
             out_channels=hidden_size,
             kernel_size=shrink_factor,
             stride=shrink_factor,
-            padding=0
-        )
+            padding=shrink_factor // 2)
         self.activation = F.gelu
 
         self.norm = nn.LayerNorm(hidden_size, eps=1e-12)
@@ -349,7 +348,7 @@ class CanineEncoder(nn.Module):
 
         self.downsample_mask = torch.nn.MaxPool1d(
             kernel_size=shrink_factor, stride=shrink_factor,
-            padding=0, ceil_mode=False)
+            padding=0, ceil_mode=True)
 
     def forward(self, data: T, mask: T) -> Tuple[T, T]:
         attention_mask = self._create_3d_attention_mask_from_input_mask(data, mask)
