@@ -190,7 +190,7 @@ class Encoder(nn.Module):
         if char_process_type == "conv":
             self.embeddings = nn.Embedding(vocab_size, char_embedding_dim)
             self.pre_pos_emb = nn.Parameter(
-                torch.randn(1, max_length, vocab_size))
+                torch.randn(1, max_length, char_embedding_dim))
             self.char_encoder = CharToPseudoWord(
                 char_embedding_dim, intermediate_dim=dim,
                 conv_filters=conv_filters,

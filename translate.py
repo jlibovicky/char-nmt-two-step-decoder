@@ -84,6 +84,7 @@ def main():
         char_embedding_dim=exp_args.get("char_emb_dim"),
         dim=exp_args.get("dim"),
         shrink_factor=exp_args.get("shrink_factor"),
+        charformer_block_size=exp_args.get("charformer_block_size", 5),
         nar_output=exp_args.get("nar_output"),
         highway_layers=exp_args.get("highway_layers"),
         char_ff_layers=exp_args.get("char_ff_layers"),
@@ -91,6 +92,7 @@ def main():
         layers=exp_args.get("layers"),
         attention_heads=exp_args.get("attention_heads"),
         dropout=exp_args.get("dropout"),
+        char_process_type=exp_args.get("char_process_type", "conv"),
         vanilla_encoder=exp_args.get("vanilla_encoder"),
         vanilla_decoder=exp_args.get("vanilla_decoder"),
         share_char_repr=exp_args.get("share_char_repr")).to(device)

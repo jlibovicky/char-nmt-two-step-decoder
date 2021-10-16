@@ -79,6 +79,7 @@ class ConvDecoder(nn.Module):
 
         self.position_embeddings = nn.Parameter(
             torch.randn((1, max_len, embedding_dim)))
+        self.position_embeddings.requires_grad = True
 
         self.pre_deconv = nn.Sequential(
             nn.LayerNorm(embedding_dim),
@@ -118,11 +119,11 @@ class ConvDecoder(nn.Module):
         # t = torch.tensor([[[1,1,2,2,3,3], [4,4,5,5,6,6]]])
         # t.reshape(1, -1, 2) returns what it should return
 
-        #if latent_embedded.size(1) > self.max_len:
-        #    raise ValueError("Too long input.")
-        #latent_embedded = (
-        #    latent_embedded +
-        #    self.position_embeddings[:, :latent_embedded.size(1)])
+        if latent_embedded.size(1) > self.max_len:
+            raise ValueError("Too long input.")
+        latent_embedded = (
+            latent_embedded +
+            self.position_embeddings[:, :latent_embedded.size(1)])
         latent_embedded = self.pre_deconv(latent_embedded)
 
         output = latent_embedded
@@ -493,7 +494,7 @@ def main():
         dropout=args.dropout,
         temperature=args.temperature).to(device)
 
-    loss_function = nn.CTCLoss()
+    loss_function = nn.CTCLoss(zero_infinity=True)
     optimizer = optim.Adam(model.parameters())
     scheduler = NoamLR(optimizer, args.warmup)
 
