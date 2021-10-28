@@ -167,7 +167,7 @@ def main():
         "val_src", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
     parser.add_argument(
         "val_tgt", type=argparse.FileType("r"), nargs="?", default=sys.stdin)
-    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--batch-size", type=int, default=10000)
     parser.add_argument(
         "--skip-pretokenization", action="store_true", default=False)
     parser.add_argument(
@@ -194,7 +194,7 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--warmup", type=int, default=10000)
     parser.add_argument("--label-smoothing", type=float, default=0.1)
-    parser.add_argument("--delay-update", type=int, default=1)
+    parser.add_argument("--delay-update", type=int, default=2)
     parser.add_argument("--validation-period", type=int, default=1000)
     parser.add_argument(
         "--convolutions", nargs="+",

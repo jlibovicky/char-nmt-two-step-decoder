@@ -103,17 +103,17 @@ class Decoder(nn.Module):
         #    nn.Dropout(dropout),
         #    nn.LayerNorm(dim),
         #    nn.Linear(dim, shrink_factor * char_embedding_dim))
-        self.nar_proj = nn.Linear(dim, shrink_factor * char_embedding_dim)
+        self.nar_proj = nn.Linear(dim, shrink_factor * dim // 2)
 
         if not self.nar_output:
             self.char_decoder_rnn = nn.LSTM(
-                2 * char_embedding_dim,
-                2 * char_embedding_dim, batch_first=True)
+                char_embedding_dim +  dim // 2,
+                dim, batch_first=True)
             self.output_proj = nn.Linear(
-                3 * char_embedding_dim, char_vocabulary_size)
+                dim // 2 + dim, char_vocabulary_size)
         else:
             self.output_proj = nn.Linear(
-                char_embedding_dim, char_vocabulary_size)
+                dim // 2, char_vocabulary_size)
 
         #self.output_proj = nn.Sequential(
         #    nn.Linear(char_embedding_dim, 2 * char_embedding_dim),
@@ -192,7 +192,7 @@ class Decoder(nn.Module):
         # which might include at most `shrink_factor - 1` paddings
         # for which there are not labels
         char_states = self.nar_proj(decoder_states).reshape(
-            batch_size, -1, self.char_embedding_dim)[:, :target_ids.size(1)]
+            batch_size, -1, self.dim // 2)[:, :target_ids.size(1)]
 
         if self.nar_output:
             decoder_logits = self.output_proj(char_states)
@@ -284,7 +284,7 @@ class Decoder(nn.Module):
                 for_training=False)
             last_state = states[:, -1:]
             char_states = self.nar_proj(last_state).reshape(
-                batch_size, -1, self.char_embedding_dim)
+                batch_size, -1, self.dim // 2)
 
             if self.nar_output:
                 decoder_logits = self.output_proj(char_states)
