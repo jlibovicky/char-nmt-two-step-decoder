@@ -105,6 +105,7 @@ class Seq2SeqModel(nn.Module):
                 layers=layers,
                 ff_dim=ff_dim,
                 attention_heads=attention_heads,
+                char_process_type=char_process_type,
                 dropout=dropout,
                 encoder=self.encoder if # type: ignore
                     share_char_repr else None)
