@@ -4,7 +4,7 @@ from charformer_pytorch import GBST
 import torch
 from torch import nn
 from torch.functional import F
-from transformers.modeling_bert import BertConfig, BertModel
+from transformers.models.bert.modeling_bert import BertConfig, BertModel
 
 from canine import CanineEncoder
 from encoder import CharToPseudoWord, Encoder, VanillaEncoder
@@ -62,6 +62,9 @@ class Decoder(nn.Module):
                     ff_layers=char_ff_layers,
                     is_decoder=True)
             elif char_process_type == "charformer":
+                self.char_embeddings = nn.Sequential(
+                    nn.Embedding(char_vocabulary_size, char_embedding_dim),
+                    nn.Dropout(dropout))
                 self.char_encoder = GBST(
                     num_tokens=char_vocabulary_size,
                     dim=dim,
@@ -150,8 +153,9 @@ class Decoder(nn.Module):
         input_mask = torch.cat([to_prepend, target_mask], dim=1)
 
         if self.char_process_type in ["conv", "canine"]:
+            char_embs = self.char_embeddings(dec_input)
             decoder_embeddings, shrinked_mask = self.char_encoder(
-                (self.char_embeddings(dec_input) +
+                (char_embs +
                     self.pre_pos_emb[:, :dec_input.size(1)]),
                 input_mask)
         elif self.char_process_type == "charformer":
@@ -161,12 +165,13 @@ class Decoder(nn.Module):
         else:
             raise ValueError(f"Invalid char_process_type '{self.char_process_type}'")
 
-        decoder_states, _, self_att, encdec_att = self.transformer(
+        decoder_states, _, _, self_att, encdec_att = self.transformer(
             input_ids=None,
             inputs_embeds=decoder_embeddings,
             attention_mask=shrinked_mask,
             encoder_hidden_states=encoder_states,
-            encoder_attention_mask=encoder_mask)
+            encoder_attention_mask=encoder_mask,
+            return_dict=False)
 
         return decoder_states, shrinked_mask, self_att, encdec_att
 
@@ -219,7 +224,7 @@ class Decoder(nn.Module):
             decode_start = i * self.shrink_factor
             decode_end = min(
                 target_mask.size(1),
-                (i + 1) * self.char_encoder.max_pool_window)
+                (i + 1) * self.shrink_factor)
             step_input_ids = pad_target_ids[:, decode_start:decode_end]
             step_output_ids = pad_target_ids[:, decode_start + 1: decode_end + 1]
 
@@ -262,7 +267,7 @@ class Decoder(nn.Module):
             max_len: int = 300,
             sample: bool = False) -> Tuple[T, T]:
         batch_size = encoder_states.size(0)
-        step_size = self.char_encoder.max_pool_window
+        step_size = self.shrink_factor
 
         decoded = torch.ones(
             (batch_size, 0),

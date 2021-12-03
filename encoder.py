@@ -4,7 +4,7 @@ from charformer_pytorch import GBST
 import torch
 from torch import nn
 import torch.nn.functional as F
-from transformers.modeling_bert import BertConfig, BertModel # type: ignore
+from transformers.models.bert.modeling_bert import BertConfig, BertModel # type: ignore
 
 from canine import CanineEncoder
 
@@ -257,7 +257,8 @@ class Encoder(nn.Module):
         transformed, _, attentions = self.transformer(
             input_ids=None,
             inputs_embeds=encoded,
-            attention_mask=enc_mask)
+            attention_mask=enc_mask,
+            return_dict=False)
 
         return transformed, enc_mask, attentions
 
