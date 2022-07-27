@@ -1,8 +1,13 @@
+joblib
+cython
 torch
-transformers
+transformers==3.5.0
 editdistance
 sacrebleu
 pyyaml
 tensorboardX
 youtokentome
 charformer-pytorch
+sacremoses
+spacy_udpipe
+subword_nmt

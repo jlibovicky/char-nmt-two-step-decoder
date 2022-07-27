@@ -504,13 +504,16 @@ class VanillaDecoder(nn.Module):
         dec_input = torch.cat([to_prepend, target_ids], dim=1)
         input_mask = torch.cat([to_prepend, target_mask], dim=1)
 
-        decoder_states, _, self_att, encdec_att = self.transformer(
+        #decoder_states, _, self_att, encdec_att = 
+        transformer_out = self.transformer(
             dec_input,
             attention_mask=input_mask,
             encoder_hidden_states=encoder_states,
             encoder_attention_mask=encoder_mask)
 
-        return decoder_states, self_att, encdec_att
+        return (transformer_out.last_hidden_state,
+                transformer_out.attentions,
+                transformer_out.cross_attentions)
 
     def forward(
             self,

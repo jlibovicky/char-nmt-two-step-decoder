@@ -92,10 +92,17 @@ def from_data(
         text: List[str],
         max_vocab: int = None,
         max_lines: int = None,
-        min_frequency: int = None) -> BPETokenizer:
+        min_frequency: int = None,
+        src_language: str = None,
+        tgt_language: str = None) -> BPETokenizer:
     if min_frequency is not None:
         raise ValueError(
             "With BPE minimum token frequency must not be defined.")
+
+    if max_vocab is None:
+        raise ValueError(
+            "Max vocab must be defined.")
+
 
     if max_lines is not None:
         text = text[:max_lines]

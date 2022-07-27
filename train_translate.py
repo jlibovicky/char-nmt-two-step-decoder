@@ -182,7 +182,8 @@ def main():
     parser.add_argument("--dim", type=int, default=512)
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument(
-        "--char-process-type", type=str, choices=["conv", "charformer", "canine"],
+        "--char-process-type",
+        type=str, choices=["conv", "charformer", "canine"],
         default="conv")
     parser.add_argument("--shrink-factor", type=int, default=5)
     parser.add_argument("--charformer-block-size", type=int, default=5)

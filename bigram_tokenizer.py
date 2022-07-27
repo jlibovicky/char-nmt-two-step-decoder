@@ -21,7 +21,7 @@ class BigramTokenizer(BaseTokenizer):
             add_special_tokens: bool = True,  # Add [CLS] and [SEP]
             max_length: int = 512,  # maximum length of a sentence
             truncation: bool = False,
-            pad_to_max_length: bool =True,  # Add [PAD]s
+            pad_to_max_length: bool = True,  # Add [PAD]s
             return_attention_mask: bool = True,  # Generate the attention mask
             return_tensors: str = "pt"):
 
@@ -104,7 +104,7 @@ def from_data(
         unigram_counter.update(sent)
         bigram_counter.update([f"<s>{sent[0]}", f"{sent[-1]}</s>"])
         bigram_counter.update([
-            sent[j] + sent[j + 1] for j in range(len(sent) -1)])
+            sent[j] + sent[j + 1] for j in range(len(sent) - 1)])
     pbar.close()
 
     if min_frequency is not None:
